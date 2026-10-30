@@ -1,0 +1,18 @@
+# 环境变量与密钥（绝不提交）
+.env
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# 虚拟环境
+.venv/
+
+# 测试报告与轨迹（含执行证据，默认不提交；保留目录）
+reports/*
+!reports/.gitkeep
+
+# 系统/编辑器临时文件
+.DS_Store
+*.tmp

@@ -1,0 +1,15 @@
+# BenProject 直接依赖（Python 3.12）
+# 安装：.venv/Scripts/python.exe -m pip install -r requirements.txt
+# 版本与当前 .venv 对齐，保证可复现；间接依赖由 pip 自动解析。
+
+# DeepSeek 调用（OpenAI 兼容接口，含 function calling 支持）
+openai==2.53.0
+
+# Docker 守护进程 SDK（容器生命周期与容器内执行）
+docker==7.1.0
+
+# 从 .env 加载环境变量
+python-dotenv==1.2.2
+
+# 工具参数 JSON Schema 校验
+jsonschema==4.26.0
