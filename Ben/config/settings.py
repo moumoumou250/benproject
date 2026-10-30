@@ -100,6 +100,8 @@ def load_settings(*, require_api_key: bool = True) -> Settings:
         command_timeout=float(_env("COMMAND_TIMEOUT", "30") or 30),
         reports_dir=PROJECT_ROOT / "reports",
         # Prompt 随 agents 包走，和 strix/agents/prompts 的放置方式一致。
+        # __file__是Ben/config/settings.py的位置
+        #  `.parents[0]` →`Ben/config` `.parents[1]` →`Ben`
         prompts_dir=Path(__file__).resolve().parents[1] / "agents" / "prompts",
     )
 

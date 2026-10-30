@@ -199,6 +199,8 @@ class DockerExecutor:
                 "nano_cpus": int(self.cpus * 1e9),
                 "privileged": False,
             }
+            # entrypoint是 Docker启动的默认入口
+            # 不为空，则指定了entrypoint，否则使用默认entrypoint
             if self.entrypoint is not None:
                 # 空列表清空内置 entrypoint，跳过 strix 镜像的 Caido/代理初始化。
                 create_kwargs["entrypoint"] = self.entrypoint

@@ -1,0 +1,13 @@
+"""
+第一步 初始化对话历史文，包含系统提示词和用户指令
+messages = [
+    {"role": "system", "content": SYSTEM_PROMPT_CONTENT},
+    {"role": "user", "content": "请对以下已授权目标开展测试：http://127.0.0.1\n授权范围：http://127.0.0.1\n请按预设流程，先理解目标，再选择合适的工具取证，最后输出有真实证据支持的测试报告。"}
+]
+第一轮 调用DeepSeek
+response = self.llm.chat(messages, tool_schemas,tool_choice="auto")
+{"role":"assistant","tool_calls":[{"function":{"name":"http_check","arguments":"{\"url\":\"http://127.0.0.1\"}"}}]}
+messages.append(self._assistant_message(response))  AI回答加入历史
+
+工具返回 {"status_code": 200,"title": "测试网站"}
+"""

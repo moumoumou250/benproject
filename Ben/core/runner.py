@@ -163,8 +163,10 @@ class AgentRunner:
 
         # 确保执行容器就绪（真实容器在此时启动/复用）。
         self.executor.ensure_container()
-
+        
+        # 第二阶段 加载系统提示词
         system_prompt = self._load_prompt()
+        # 对话历史零，初始化对话历史文
         messages: list[dict] = [
             {"role": "system", "content": system_prompt},
             {
@@ -177,7 +179,8 @@ class AgentRunner:
                 ),
             },
         ]
-
+        # ToolInvocation类记录工具调用信息
+        # 声明一个列表，规定存储的是ToolInvocation实例化对象
         invocations: list[ToolInvocation] = []
         stopped_reason = "未知"
         final_text = ""
@@ -186,16 +189,22 @@ class AgentRunner:
         for turn in range(1, self.settings.max_agent_turns + 1):
             logger.info("===== 第 %d/%d 轮决策 =====", turn, self.settings.max_agent_turns)
 
-            # 尚未取得任何真实工具结果前，强制模型调用 http_check，
-            # 防止它跳过取证、凭经验直接编造一份"报告"。
+            # 强制调用工具；
             force_tool = len(invocations) == 0
+            # tool_choice是三元表达式，如果force_tool(默认0 False)，走前，强制http_check工具
+            # 调用过则force_tool为True，走自动选择工具
             tool_choice = (
                 {"type": "function", "function": {"name": "http_check"}}
                 if force_tool
                 else "auto"
             )
+
             try:
+                # system
+                # 假设使用了DeepSeek模型 self.llm就是DeepSeek客户端，.chat调用聊天接口
                 response: LLMResponse = self.llm.chat(
+                    # messages是对话上下文，tool_schemas告诉模型有哪些工具可用，
+                    # tool_choice是deep选中的工具
                     messages, tool_schemas, tool_choice=tool_choice
                 )
             except LLMError as exc:
@@ -204,6 +213,7 @@ class AgentRunner:
                 stopped_reason = f"模型错误：{exc}"
                 final_text = self._fallback_report(target, invocations, stopped_reason)
                 break
+            # 这轮对话 记入对话历史
 
             messages.append(self._assistant_message(response))
 
