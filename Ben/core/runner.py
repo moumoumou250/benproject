@@ -184,6 +184,7 @@ class AgentRunner:
         invocations: list[ToolInvocation] = []
         stopped_reason = "未知"
         final_text = ""
+        # 规格转成schema （包括MCP工具和HTTP_CHECK工具）
         tool_schemas = self.registry.openai_tools()
 
         for turn in range(1, self.settings.max_agent_turns + 1):
@@ -245,6 +246,9 @@ class AgentRunner:
             for tc in response.tool_calls:
                 logger.info("模型请求工具：%s 参数：%s", tc.name, tc.arguments)
                 try:
+                    # tc.name = "call_mcp" 
+                    # arguments是dict，内容为{"connection": "filesystem", "tool": "echo", "arguments": {"message": "ok"}}}
+
                     tool_result = self.registry.execute(tc.name, tc.arguments, self.runtime)
                     invocation = ToolInvocation(
                         turn=turn,

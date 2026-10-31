@@ -13,3 +13,6 @@ python-dotenv==1.2.2
 
 # 工具参数 JSON Schema 校验
 jsonschema==4.26.0
+
+# MCP 客户端 SDK（连接外部 MCP 服务器，支持 stdio/http 两种传输）
+mcp==1.28.1

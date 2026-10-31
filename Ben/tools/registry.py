@@ -97,6 +97,7 @@ class ToolRegistry:
             raise ToolError(f"工具已存在：{spec.name}")
         # 提前校验参数 schema 本身合法，避免把坏 schema 发给模型。
         Draft202012Validator.check_schema(spec.parameters)
+        # 此处为tool与spec的映射关系
         self._tools[spec.name] = spec
         logger.info("注册工具：%s", spec.name)
     def get(self, name: str) -> ToolSpec:
@@ -123,9 +124,10 @@ class ToolRegistry:
             first = errors[0]
             loc = ".".join(str(p) for p in first.absolute_path) or "<root>"
             raise ToolValidationError(f"工具 {name} 参数非法（{loc}）：{first.message}")
-
+    # tc.name = "call_mcp" 
+    # arguments是dict，内容为{"connection": "filesystem", "tool": "echo", "arguments": {"message": "ok"}}}
     def execute(self, name: str, arguments: dict[str, Any], runtime: ToolRuntime) -> ToolResult:
-        """校验名称与参数后，交给工具执行器真实执行。"""
+        # 
         spec = self.get(name)
         self.validate_arguments(name, arguments)
         logger.info("执行工具 %s，参数：%s", name, _redact(arguments))
@@ -147,17 +149,33 @@ def _redact(arguments: dict[str, Any]) -> dict[str, Any]:
 
 
 def build_default_registry() -> ToolRegistry:  # 预期返回ToolRegistry类型对象
-    """注册第一阶段默认工具（当前仅基础 HTTP 检查）。"""
+    """注册默认工具：基础 HTTP 检查 + MCP 发现/调度。"""
     from Ben.tools.http_check import HTTP_CHECK_SPEC
+    from Ben.tools.mcp import CALL_MCP_SPEC, LIST_MCP_SPEC
     # registry是ToolRegistry()类的实例，他的实例属性只有`_tools`
     # registry.__dict__ == {'_tools': {}}
     registry = ToolRegistry()
     # HTTP_CHECK_SPEC是ToolSpec的实例对象
     """
     注册前:registry.__dict__ == {'_tools': {}}
-    注册后:registry.__dict__ == {'_tools': {'http_check': HTTP_CHECK_SPEC}}
+    注册后:registry.__dict__ == {
+        'http_check': HTTP_CHECK_SPEC,
+        'list_mcps': LIST_MCP_SPEC,
+        'call_mcp': CALL_MCP_SPEC,
+    }
     """
     registry.register(HTTP_CHECK_SPEC)
+    # MCP 工具：无配置文件时 list_mcps 返回空，不影响现有任务流程
+    registry.register(LIST_MCP_SPEC)
+    """
+    # 此处 CALL_MCP_SPEC 已提前注册到 registry 中
+    # 当 self.registry.execute() 接收到 tc.name = "call_mcp" 时
+    # 会通过 name 找到 CALL_MCP_SPEC 实例
+    # 再通过 CALL_MCP_SPEC.handler 调用 _call_mcp 函数
+    """
+    registry.register(CALL_MCP_SPEC)
+
+
     return registry
 """
 
