@@ -1,16 +1,20 @@
 # BenProject — 最小漏洞测试 Agent（OpenAI 兼容大模型 + Docker）
 
-一个**可实际运行**的最小项目：把参考项目（clown-src-6k-skill）的漏洞挖掘工作流，
-转化为独立的「预设 Prompt、模型调用、工具执行、Docker 容器、结果处理」模块。
+一个**可实际运行**的最小漏洞测试项目：将漏洞挖掘工作流拆分为独立的
+「预设 Prompt、模型调用、工具执行、Docker 容器、结果处理」模块。
 当前默认接**智谱 GLM（glm-5.3-flash，免费）**，客户端基于 OpenAI 兼容接口，
-改两行配置即可切换 DeepSeek。当前阶段不包含 Skill 加载/发现机制，也不是完整
-Agent 框架。
+改两行配置即可切换 DeepSeek。已内置轻量 Skill 机制（`Ben/skills/` 知识片段目录，
+渲染时按角色/模式内联共享片段，运行时可经 `load_skill` 工具按需加载），但仍不
+是完整 Agent 框架。支持**黑盒 / 白盒双模式**（白盒经 `is_whitebox` 渲染开关与
+`scan_modes/whitebox.md` 片段启用：源码仅用于定位疑点，结论仍以受控工具真实
+响应为准）。定位为**授权安全研究 / 披露 / 教育**用途：授权范围内积极推进、
+不误拒；范围外目标一律不碰。
 
 ## 一、工作流程
 
 ```
 用户输入授权目标
-  -> 加载预设 Prompt（Ben/agents/prompts/vulnerability_testing.txt）
+  -> 加载预设 Prompt（Ben/agents/prompts/system_prompt.jinja）
   -> 组装任务上下文
   -> 调用 DeepSeek（OpenAI 兼容接口）
   -> 解析响应，判断是否提出工具调用（function call）
@@ -37,9 +41,10 @@ BenProject/
 ├── Ben/                        # Python 包（对应 strix/）
 │   ├── agents/                 # Agent 构建与预设 Prompt
 │   │   ├── factory.py          # 基于 openai-agents SDK 的 SandboxAgent 构建（实验路径）
-│   │   ├── prompt.py           # 预设 Prompt 加载
+│   │   ├── prompt.py           # 预设 Prompt 加载、Jinja 渲染与 skill 片段合并
 │   │   └── prompts/
-│   │       └── vulnerability_testing.txt   # 分七节的固定测试指导
+│   │       ├── system_prompt.jinja   # 分七节的主模板（含 available_skills 目录）
+│   │       └── scope.jinja           # 授权范围片段
 │   ├── config/
 │   │   └── settings.py         # 读取 .env / 环境变量并校验（原根 config.py）
 │   ├── core/
@@ -53,13 +58,14 @@ BenProject/
 │   │   ├── docker_connection.py    # 稳定的 Docker 守护进程连接
 │   │   ├── docker_executor.py      # 容器生命周期 + 容器内执行 + 超时处理
 │   │   └── check_docker_connection.py  # 连接自检脚本
-│   └── tools/
-│       ├── registry.py         # 工具注册、Schema 校验、执行分发
-│       └── http_check.py       # 只读 HTTP 连通性 + 响应头检查
+│   ├── tools/
+│   │   ├── registry.py         # 工具注册、Schema 校验、执行分发
+│   │   ├── http_check.py       # 只读 HTTP 连通性 + 响应头检查
+│   │   └── load_skill.py       # 只读知识片段加载（按名取 Ben/skills/ 正文）
+│   └── skills/                 # 知识片段目录（scan_modes / analysis / coordination / custom）
 ├── containers/                 # Docker 镜像构建资源
 │   ├── Dockerfile
 │   └── docker-entrypoint.sh
-├── skills/                     # 技能目录（预留）
 └── reports/                    # report_*.md / trace_*.json 输出目录
 ```
 
@@ -171,3 +177,12 @@ socket、不使用特权容器。
 - **待提供 Key 后验证**：`--selftest-llm` 文本调用、function calling 工具调用、
   完整 Agent 多轮循环、Juice Shop 端到端报告。代码已就绪，配置好 `.env` 后按
   第七、八节命令即可重复运行。
+
+## 十二、配套执行规则
+
+项目内 `补充执行规则/` 为永久生效的研究执行规则目录（入口
+[补充执行规则/AGENTS.md](补充执行规则/AGENTS.md)），覆盖：授权研究语境、
+黑盒+白盒主流程、SRC 价值矩阵、报告格式、反过度说教、任务目录、迭代落盘等。
+本项目 Agent 的 prompt 内嵌了其中与本程序相关的纪律（授权范围、证据分级、
+报告要求）；人机协作层面的完整流程以该目录 rules 原文为准，冲突时按目录内
+优先级裁决。

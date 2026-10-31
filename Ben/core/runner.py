@@ -93,8 +93,13 @@ class AgentRunner:
         )
 
     # ------------------------------------------------------------------
-    def _load_prompt(self) -> str:
-        return load_system_prompt(self.settings.prompts_dir)
+    def _load_prompt(self, target: str) -> str:
+        # Jinja 渲染：Settings/目标经渲染上下文注入；对外仍是一个字符串。
+        return load_system_prompt(
+            self.settings.prompts_dir,
+            settings=self.settings,
+            target=target,
+        )
     
     # 无需实例化类，就可以直接通过类名调用
     @staticmethod
@@ -164,8 +169,8 @@ class AgentRunner:
         # 确保执行容器就绪（真实容器在此时启动/复用）。
         self.executor.ensure_container()
         
-        # 第二阶段 加载系统提示词
-        system_prompt = self._load_prompt()
+        # 第二阶段 渲染系统提示词（主模板 + 片段 + scope，运行时注入变量）
+        system_prompt = self._load_prompt(target)
         # 对话历史零，初始化对话历史文
         messages: list[dict] = [
             {"role": "system", "content": system_prompt},

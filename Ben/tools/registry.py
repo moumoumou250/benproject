@@ -149,8 +149,9 @@ def _redact(arguments: dict[str, Any]) -> dict[str, Any]:
 
 
 def build_default_registry() -> ToolRegistry:  # 预期返回ToolRegistry类型对象
-    """注册默认工具：基础 HTTP 检查 + MCP 发现/调度。"""
+    """注册默认工具：基础 HTTP 检查 + MCP 发现/调度 + 只读知识片段加载。"""
     from Ben.tools.http_check import HTTP_CHECK_SPEC
+    from Ben.tools.load_skill import LOAD_SKILL_SPEC
     from Ben.tools.mcp import CALL_MCP_SPEC, LIST_MCP_SPEC
     # registry是ToolRegistry()类的实例，他的实例属性只有`_tools`
     # registry.__dict__ == {'_tools': {}}
@@ -162,9 +163,12 @@ def build_default_registry() -> ToolRegistry:  # 预期返回ToolRegistry类型�
         'http_check': HTTP_CHECK_SPEC,
         'list_mcps': LIST_MCP_SPEC,
         'call_mcp': CALL_MCP_SPEC,
+        'load_skill': LOAD_SKILL_SPEC,
     }
     """
     registry.register(HTTP_CHECK_SPEC)
+    # 只读知识片段加载：按名读取已注册片段目录，不接受路径
+    registry.register(LOAD_SKILL_SPEC)
     # MCP 工具：无配置文件时 list_mcps 返回空，不影响现有任务流程
     registry.register(LIST_MCP_SPEC)
     """
