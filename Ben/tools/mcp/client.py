@@ -1,7 +1,7 @@
 """MCP 客户端：连接服务器、列出工具、调用工具。
 
-异步内核基于官方 mcp SDK；Ben 主体是同步架构，因此用 asyncio.run() 在外层
-包一层同步函数，供 ToolSpec 的 handler 直接调用。
+异步内核基于官方 mcp SDK；用 asyncio.run() 在外层包一层同步函数，供
+function_tools 中的 @function_tool 工具直接调用。
 
 最简版取舍：
 - 每次调用都新建连接、用完即关，不保持长会话（mcp 的会话绑定在创建它的

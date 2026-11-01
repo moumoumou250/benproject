@@ -1,25 +1,38 @@
-"""最小 Agent 循环运行器。
+"""openai-agents SDK 驱动的 Agent 运行器（对齐 strix 的 core/runner.py + execution.py）。
 
-把用户给定的流程实现为可运行、可调试、可通过日志验证的代码：
+用 SDK 的 ``Runner.run_streamed()`` + ``RunConfig`` 替代手写的多轮循环。
+Agent 使用普通 ``Agent``（非 ``SandboxAgent``），因为 DeepSeek/GLM 端点只支持
+chat_completions API，不支持 SandboxAgent 的 hosted tools。
 
+Sandbox 容器仍由 SDK 的 ``DockerSandboxClient`` + ``SandboxSession`` 管理，
+但通过 ``ctx.context`` 注入到 @function_tool 工具中使用（http_check 通过
+session.exec() 在容器内执行 curl 命令）。
+
+流程：
   用户输入目标
-    -> 加载预设 Prompt（Ben/agents/prompts/vulnerability_testing.txt）
-    -> 组装任务上下文
-    -> 调用 DeepSeek
-    -> 解析响应，判断是否提出工具调用
-    -> 校验工具名称与参数（ToolRegistry）
-    -> 在 Docker 容器内真实执行
-    -> 把真实结果返回模型，进入下一轮
+    -> 加载预设 Prompt（Jinja2 渲染）
+    -> 配置 SDK 全局默认值（configure_sdk_model_defaults）
+    -> 创建 SDK Docker sandbox client + session
+    -> 构建 Agent（factory.build_agent，含 4 个 @function_tool）
+    -> 构建 RunConfig（model only，无 sandbox 参数）
+    -> Runner.run_streamed() 启动 agent 循环
+    -> SDK 自动处理工具调用 / 结果回传 / 多轮对话
     -> 满足结束条件（模型不再调用工具 / 达到轮数上限）
+    -> 关闭 sandbox session（清理容器）
     -> 生成并保存测试报告
 
-关键边界：模型的"决策"与程序的"实际执行"严格分离。模型提出执行请求只代表
-意图；只有 ToolRegistry/执行器返回真实结果，才认定操作发生。模型不能仅凭
-措辞让任何命令执行。
+模块职责清晰：
+  - Ben.config.settings      → 读取 .env，配置 SDK 全局默认值
+  - Ben.agents.factory       → 构建 Agent（工具 + instructions）
+  - Ben.agents.prompt        → Jinja2 渲染系统提示词
+  - Ben.tools.function_tools → @function_tool 工具（http_check/load_skill/mcp）
+  - Ben.core.runner          → 编排：配置→agent→sandbox→RunConfig→Runner→报告
+  - SDK sandbox              → Docker 容器生命周期 + exec 命令执行
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -28,39 +41,31 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from Ben.agents.prompt import load_system_prompt
-from Ben.config import Settings
-from Ben.llm.deepseek_client import LLMError, LLMResponse
-from Ben.runtime.docker_executor import DockerExecutor
-from Ben.tools.registry import (
-    ToolRegistry,
-    ToolRuntime,
-    ToolError,
+from agents import RunConfig, Runner, RunItemStreamEvent
+from agents.exceptions import MaxTurnsExceeded
+from agents.items import (
+    ItemHelpers,
+    MessageOutputItem,
+    RunItem,
+    ToolCallItem,
+    ToolCallOutputItem,
 )
+from agents.model_settings import ModelSettings
+from agents.sandbox.sandboxes.docker import DockerSandboxClient, DockerSandboxClientOptions
+
+from Ben.agents.factory import build_agent
+from Ben.agents.prompt import load_system_prompt
+from Ben.config import Settings, configure_sdk_model_defaults
 
 logger = logging.getLogger(__name__)
 
-"""
-@dataclass的作用就是省去 以下代码
-    self.turn = turn
-    self.name = name
-    self.arguments = arguments
-    self.ok = ok
-    self.result_summary = result_summary
-    self.data = data if data is not None else {}
-    self.error = error
-"""
+
 @dataclass
 class ToolInvocation:
-    """一次工具调用的完整记录（决策参数 + 真实结果），用于轨迹与报告。"""
-    turn: int
+    """一次工具调用的完整记录（用于轨迹与报告）。"""
     name: str
-    arguments: dict
-    ok: bool
-    result_summary: str
-    data: dict = field(default_factory=dict)
-    error: str = ""
-
+    arguments: str
+    output: str
 
 
 @dataclass
@@ -75,263 +80,497 @@ class AgentRunResult:
     invocations: list[ToolInvocation] = field(default_factory=list)
 
 
-class AgentRunner:
-    """驱动"模型决策 <-> 工具执行"多轮循环的最小运行器。"""
-    
-    def __init__(self,*,
-    # 创建对象必须传入的参数
-    settings: Settings,llm: object,registry: ToolRegistry,executor: DockerExecutor,) -> None:
-        # 初始化属性
-        self.settings = settings
-        self.llm = llm  # 满足 LLMClient 协议（DeepSeekClient）
-        self.registry = registry
-        self.executor = executor
-        self.runtime = ToolRuntime(
-            executor=executor,
-            allowed_targets=settings.allowed_targets,
-            command_timeout=settings.command_timeout,
+def _short_args(args_str: str, max_len: int = 80) -> str:
+    """从工具调用参数 JSON 中提取 URL 或关键参数，用于日志显示。"""
+    if not args_str:
+        return ""
+    try:
+        args = json.loads(args_str) if isinstance(args_str, str) else args_str
+        if isinstance(args, dict):
+            url = args.get("url", "")
+            if url:
+                return url
+            return json.dumps(args, ensure_ascii=False)[:max_len]
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return args_str[:max_len] if isinstance(args_str, str) else str(args_str)[:max_len]
+
+
+def _check_target_allowed(target: str, allowed: tuple[str, ...]) -> None:
+    """校验目标在授权白名单内。"""
+    parts = urlsplit(target)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise ValueError(f"目标必须是 http/https URL：{target!r}")
+    origin = (
+        f"{parts.scheme}://{parts.hostname}:{parts.port}"
+        if parts.port is not None
+        else f"{parts.scheme}://{parts.hostname}"
+    )
+    allowed_origins = set()
+    for item in allowed:
+        p = urlsplit(item)
+        if p.hostname:
+            allowed_origins.add(
+                f"{p.scheme}://{p.hostname}:{p.port}"
+                if p.port is not None
+                else f"{p.scheme}://{p.hostname}"
+            )
+    if origin not in allowed_origins:
+        raise ValueError(
+            f"目标 {origin} 不在授权白名单 {sorted(allowed_origins)} 内，拒绝启动"
         )
 
-    # ------------------------------------------------------------------
+
+def _extract_tool_invocations(items: list[RunItem]) -> list[ToolInvocation]:
+    """从 SDK 的 run items 中提取工具调用记录。
+
+    SDK 在 chat_completions 模式下，ToolCallItem.raw_item 是
+    ResponseFunctionToolCall（有 .name/.arguments 属性），
+    ToolCallOutputItem.raw_item 是 dict（output 存在 "output" 键下）。
+    """
+    invocations: list[ToolInvocation] = []
+    pending_calls: dict[str, ToolInvocation] = {}  # call_id -> ToolInvocation
+
+    for item in items:
+        raw = getattr(item, "raw_item", None)
+
+        # ToolCallItem: 模型发起的工具调用
+        if isinstance(item, ToolCallItem):
+            call_name = ""
+            call_args = ""
+            call_id = ""
+            if raw is not None:
+                # responses API 格式（ResponseFunctionToolCall）
+                name_attr = getattr(raw, "name", None)
+                args_attr = getattr(raw, "arguments", None)
+                if name_attr:
+                    call_name = name_attr
+                if args_attr:
+                    call_args = args_attr if isinstance(args_attr, str) else json.dumps(args_attr)
+                call_id = getattr(raw, "call_id", None) or getattr(raw, "id", None) or ""
+                # chat_completions API 格式（ChatCompletionMessageToolCall）
+                if not call_name:
+                    func = getattr(raw, "function", None)
+                    if func:
+                        call_name = getattr(func, "name", "")
+                        call_args = getattr(func, "arguments", "") or ""
+                        call_id = getattr(raw, "id", "") or ""
+            inv = ToolInvocation(name=call_name, arguments=call_args, output="")
+            if call_id:
+                pending_calls[call_id] = inv
+            invocations.append(inv)
+
+        # ToolCallOutputItem: 工具执行结果
+        elif isinstance(item, ToolCallOutputItem):
+            output_text = ""
+            call_id = ""
+            if raw is not None:
+                # dict 格式（chat_completions 模式）
+                if isinstance(raw, dict):
+                    output_text = str(raw.get("output", "") or "")
+                    call_id = raw.get("call_id", "") or ""
+                else:
+                    # 对象格式（responses API）
+                    output_attr = getattr(raw, "output", None)
+                    if output_attr:
+                        output_text = output_attr if isinstance(output_attr, str) else str(output_attr)
+                    call_id = getattr(raw, "call_id", None) or getattr(raw, "id", None) or ""
+
+            # 尝试通过 call_id 匹配
+            if call_id and call_id in pending_calls:
+                pending_calls[call_id].output = output_text
+            else:
+                # 回退：匹配最近的未填充输出的 ToolInvocation
+                for inv in reversed(invocations):
+                    if inv.name != "unknown" and not inv.output:
+                        inv.output = output_text
+                        break
+                else:
+                    invocations.append(ToolInvocation(name="unknown", arguments="", output=output_text))
+
+    return invocations
+
+
+def _extract_final_text(items: list[RunItem]) -> str:
+    """从 run items 中提取最终的文本输出。"""
+    texts: list[str] = []
+    for item in items:
+        if isinstance(item, MessageOutputItem):
+            raw = getattr(item, "raw_item", None)
+            if raw is not None:
+                content = getattr(raw, "content", None)
+                if content:
+                    if isinstance(content, str):
+                        texts.append(content)
+                    elif isinstance(content, list):
+                        for part in content:
+                            text_val = getattr(part, "text", None) if hasattr(part, "text") else None
+                            if text_val:
+                                texts.append(text_val)
+                            elif isinstance(part, str):
+                                texts.append(part)
+    return "\n".join(texts) if texts else ""
+
+
+class AgentRunner:
+    """SDK Runner 驱动的 Agent 运行器。
+
+    模块协作流程：
+      1. Ben.config.settings → 读取 .env，校验配置
+      2. configure_sdk_model_defaults → 注入 API Key/Base URL/chat_completions
+      3. Ben.agents.prompt → Jinja2 渲染系统提示词
+      4. Ben.agents.factory → 构建 Agent（4 个 @function_tool，无 hosted tools）
+      5. SDK DockerSandboxClient → 创建容器 sandbox session（供工具使用）
+      6. RunConfig(model only) → SDK Runner.run_streamed
+      7. SDK 自动多轮：模型决策→工具调用→结果回传→下一轮
+      8. 关闭 sandbox session（清理容器）
+      9. 保存 report.md + trace.json
+    """
+
+    def __init__(
+        self,
+        *,
+        settings: Settings,
+    ) -> None:
+        self.settings = settings
+
     def _load_prompt(self, target: str) -> str:
-        # Jinja 渲染：Settings/目标经渲染上下文注入；对外仍是一个字符串。
+        """渲染系统提示词（Ben.agents.prompt 模块）。"""
         return load_system_prompt(
             self.settings.prompts_dir,
             settings=self.settings,
             target=target,
         )
-    
-    # 无需实例化类，就可以直接通过类名调用
-    @staticmethod
-    def _check_target_allowed(target: str, allowed: tuple[str, ...]) -> None:
-        """
-        result = urlsplit("https://example.com:8443/path?id=1")
-        print(result)  返回一个SplitResult对象
-        SplitResult(
-            协议     scheme='https',  
-            网络位置 netloc='example.com:8443',
-            路径     path='/path',
-            查询参数 query='id=1',
-            锚点     fragment=''
-            )
-        """
-        parts = urlsplit(target)
-        if parts.scheme not in ("http", "https") or not parts.hostname:
-            raise ToolError(f"目标必须是 http/https URL：{target!r}")
-        # 三元表达式 origin = （值1 if 条件 else 值2）
-        # parts.port not None成立则取值1，否则取值2
-        origin = (
-            f"{parts.scheme}://{parts.hostname}:{parts.port}"
-            # 端口
-            if parts.port is not None
-            else f"{parts.scheme}://{parts.hostname}"
-        )
-        # 创建空集合，存储允许的URL
-        allowed_origins = set()
-        for item in allowed:
-            p = urlsplit(item)
-            if p.hostname:
-                allowed_origins.add(
-                    f"{p.scheme}://{p.hostname}:{p.port}"
-                    if p.port is not None
-                    else f"{p.scheme}://{p.hostname}"
-                )
-        if origin not in allowed_origins:
-            raise ToolError(
-                f"目标 {origin} 不在授权白名单 {sorted(allowed_origins)} 内，拒绝启动"
-            )
 
-    @staticmethod
-    def _assistant_message(response: LLMResponse) -> dict:
-        """把模型响应重建为可回传的 assistant 消息（含 tool_calls）。"""
-        message: dict = {"role": "assistant", "content": response.text or None}
-        if response.has_tool_calls:
-            message["tool_calls"] = [
-                {
-                    "id": tc.id,
-                    "type": "function",
-                    "function": {
-                        "name": tc.name,
-                        "arguments": json.dumps(tc.arguments, ensure_ascii=False),
-                    },
-                }
-                for tc in response.tool_calls
-            ]
-        return message
+    def _build_context(self, target: str, sandbox_session: object) -> dict:
+        """构建工具运行时上下文（注入到 ctx.context）。
 
-    # ------------------------------------------------------------------
-    # 传入http://juice-shop:3000，返回AgentRunResult对象
+        工具通过 ctx.context 获取：
+          - sandbox_session: SDK 的 SandboxSession（用于 exec 命令）
+          - allowed_targets: 授权白名单
+          - command_timeout: 命令超时
+          - target: 测试目标
+        """
+        return {
+            "sandbox_session": sandbox_session,
+            "allowed_targets": self.settings.allowed_targets,
+            "command_timeout": self.settings.command_timeout,
+            "target": target,
+        }
+
     def run(self, target: str) -> AgentRunResult:
-        # 第一阶段 记录任务开始时的时间
-        started = time.monotonic()
-        self._check_target_allowed(target, self.settings.allowed_targets)
+        """同步入口：执行完整 Agent 任务。"""
+        # run() 是同步入口，负责启动 run_async()  ；
+        return asyncio.run(self.run_async(target))
 
-        # 确保执行容器就绪（真实容器在此时启动/复用）。
-        self.executor.ensure_container()
-        
-        # 第二阶段 渲染系统提示词（主模板 + 片段 + scope，运行时注入变量）
+    async def run_async(self, target: str) -> AgentRunResult:
+        """异步执行 Agent 任务（使用 SDK Runner + SDK Sandbox）。
+
+        这是整个项目的核心编排函数，串联所有模块。
+        """
+        started = time.monotonic()
+
+        # === 阶段 1: 校验目标 ===
+        logger.info("=" * 60)
+        logger.info("阶段 1/6: 校验目标")
+        logger.info("=" * 60)
+        if not target:
+            target = self.settings.allowed_targets[0]
+            logger.info("未指定目标，使用白名单首项：%s", target)
+        _check_target_allowed(target, self.settings.allowed_targets)
+        logger.info("目标校验通过：%s", target)
+
+        # === 阶段 2: 配置 SDK 全局默认值 ===
+        logger.info("=" * 60)
+        logger.info("阶段 2/6: 配置 openai-agents SDK（Ben.config.settings）")
+        logger.info("=" * 60)
+        configure_sdk_model_defaults(self.settings)
+        logger.info("SDK 配置完成：model=%s, api_route=chat_completions", self.settings.llm.model)
+
+        # === 阶段 3: 渲染系统提示词 ===
+        logger.info("=" * 60)
+        logger.info("阶段 3/6: 渲染系统提示词（Ben.agents.prompt）")
+        logger.info("=" * 60)
         system_prompt = self._load_prompt(target)
-        # 对话历史零，初始化对话历史文
-        messages: list[dict] = [
-            {"role": "system", "content": system_prompt},
-            {
-                "role": "user",
-                "content": (
+        logger.info("系统提示词已渲染（%d 字符）", len(system_prompt))
+
+        # === 阶段 4: 构建 Agent ===
+        logger.info("=" * 60)
+        logger.info("阶段 4/6: 构建 Agent（Ben.agents.factory）")
+        logger.info("=" * 60)
+        agent = build_agent(instructions=system_prompt)
+        logger.info(
+            "Agent 已构建：%s, tools=%s",
+            agent.name,
+            [t.name for t in agent.tools],
+        )
+
+        # === 阶段 5: 创建 SDK Docker Sandbox ===
+        logger.info("=" * 60)
+        logger.info("阶段 5/6: 创建 Docker Sandbox（SDK DockerSandboxClient）")
+        logger.info("=" * 60)
+        import docker as docker_sdk
+        # 使用Python Docker SDK连接Docker Engine
+        dc = docker_sdk.from_env()
+        # 创建Sandbox客户端
+        sandbox_client = DockerSandboxClient(dc)
+        # 创建镜像
+        sandbox_opts = DockerSandboxClientOptions(image=self.settings.executor_image)
+        logger.info("创建 sandbox session（image=%s）...", self.settings.executor_image)
+        # 创建Sandbox session
+        sandbox_session = await sandbox_client.create(options=sandbox_opts)
+
+        # 初始化任务运行变量
+        max_turns = self.settings.max_agent_turns
+        stopped_reason = "未知"
+        final_text = ""
+        invocations: list[ToolInvocation] = []
+        turns_used = max_turns
+
+        try:
+            async with sandbox_session:
+                logger.info("Sandbox session 已启动，容器就绪")
+
+                # 构建运行时上下文
+                context = self._build_context(target, sandbox_session)
+
+                # === 阶段 6: 启动 SDK Runner ===
+                logger.info("=" * 60)
+                logger.info(
+                    "阶段 6/6: 启动 SDK Runner.run_streamed（model=%s, max_turns=%d）",
+                    self.settings.llm.model, max_turns,
+                )
+                logger.info("=" * 60)
+
+                model_settings = ModelSettings(
+                    timeout=self.settings.llm_timeout,
+                )
+                run_config = RunConfig(
+                    model=self.settings.llm.model,
+                    model_settings=model_settings,
+                    trace_include_sensitive_data=False,
+                    tool_not_found_behavior="return_error_to_model",
+                )
+
+                # 初始输入
+                initial_input = (
                     f"请对以下已授权目标开展测试：{target}\n"
                     f"授权范围：{', '.join(self.settings.allowed_targets)}\n"
                     "请按预设流程，先理解目标，再选择合适的工具取证，"
                     "最后输出有真实证据支持的测试报告。"
-                ),
-            },
-        ]
-        # ToolInvocation类记录工具调用信息
-        # 声明一个列表，规定存储的是ToolInvocation实例化对象
-        invocations: list[ToolInvocation] = []
-        stopped_reason = "未知"
-        final_text = ""
-        # 规格转成schema （包括MCP工具和HTTP_CHECK工具）
-        tool_schemas = self.registry.openai_tools()
-
-        for turn in range(1, self.settings.max_agent_turns + 1):
-            logger.info("===== 第 %d/%d 轮决策 =====", turn, self.settings.max_agent_turns)
-
-            # 强制调用工具；
-            force_tool = len(invocations) == 0
-            # tool_choice是三元表达式，如果force_tool(默认0 False)，走前，强制http_check工具
-            # 调用过则force_tool为True，走自动选择工具
-            tool_choice = (
-                {"type": "function", "function": {"name": "http_check"}}
-                if force_tool
-                else "auto"
-            )
-
-            try:
-                # system
-                # 假设使用了DeepSeek模型 self.llm就是DeepSeek客户端，.chat调用聊天接口
-                response: LLMResponse = self.llm.chat(
-                    # messages是对话上下文，tool_schemas告诉模型有哪些工具可用，
-                    # tool_choice是deep选中的工具
-                    messages, tool_schemas, tool_choice=tool_choice
                 )
-            except LLMError as exc:
-                # 模型错误：记录并结束，不伪造报告。
-                logger.error("模型调用失败，终止任务：%s", exc)
-                stopped_reason = f"模型错误：{exc}"
-                final_text = self._fallback_report(target, invocations, stopped_reason)
-                break
-            # 这轮对话 记入对话历史
 
-            messages.append(self._assistant_message(response))
+                """
+                @最关键   Runner是 Agents SDK提供的执行器
+                # Runner 将 initial_input发给模型，模型分析任务决定调用工具，SDK执行工具
+                # 工具结果返回给模型，模型继续分析，直到完成任务
+                """
+                stream = Runner.run_streamed(
+                    agent,
+                    input=initial_input,
+                    run_config=run_config,
+                    context=context,
+                    max_turns=max_turns,
+                )
 
-            # 没有工具调用
-            if not response.has_tool_calls:
-                if force_tool:
-                    # 被要求取证却仍输出纯文本：该文本没有真实执行依据，不采信，
-                    # 追加纠正消息后继续，直到模型真正调用工具。
-                    logger.warning("模型未调用工具就输出结果，已纠正并要求先取证")
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                "你还没有调用任何工具，上面的状态码、响应大小、耗时等"
-                                "都没有真实执行依据，属于无效内容。请立即调用 http_check "
-                                "工具对目标取证；禁止在工具返回真实结果前输出任何数字或"
-                                "最终报告。"
-                            ),
-                        }
-                    )
-                    continue
-                # 已有真实工具结果，模型输出最终报告 -> 结束循环。
-                final_text = response.text or "(模型未返回文本)"
-                stopped_reason = "模型结束（输出最终报告）"
-                logger.info("模型不再调用工具，任务结束")
-                break
-
-            # 有工具调用：逐个校验并在容器内真实执行，再把结果回传。
-            for tc in response.tool_calls:
-                logger.info("模型请求工具：%s 参数：%s", tc.name, tc.arguments)
+                # 收集所有 run items + 流式日志
+                # SDK 在达到 max_turns 时会从 stream_events() 抛出 MaxTurnsExceeded，
+                # 但此时 stream.new_items 已包含已完成的工具调用与模型消息。
+                turn_count = 0
+                tool_call_count = 0
+                prev_item_type = None
                 try:
-                    # tc.name = "call_mcp" 
-                    # arguments是dict，内容为{"connection": "filesystem", "tool": "echo", "arguments": {"message": "ok"}}}
+                    async for event in stream.stream_events():
+                        if isinstance(event, RunItemStreamEvent):
+                            item = event.item
+                            item_type = type(item).__name__
 
-                    tool_result = self.registry.execute(tc.name, tc.arguments, self.runtime)
-                    invocation = ToolInvocation(
-                        turn=turn,
-                        name=tc.name,
-                        arguments=tc.arguments,
-                        ok=tool_result.ok,
-                        result_summary=tool_result.summary,
-                        data=tool_result.data,
-                        error=tool_result.error,
-                    )
-                    tool_content = tool_result.to_message()
-                except ToolError as exc:
-                    # 校验/执行失败也要作为 tool 消息回传，让模型据此修正。
-                    logger.warning("工具调用被拒绝/失败：%s", exc)
-                    invocation = ToolInvocation(
-                        turn=turn,
-                        name=tc.name,
-                        arguments=tc.arguments,
-                        ok=False,
-                        result_summary="",
-                        error=str(exc),
-                    )
-                    tool_content = (
-                        f"[工具 {tc.name} 执行失败]\n{exc}\n请修正参数或选择其它操作，"
-                        "不要重复同样的错误请求。"
-                    )
-                invocations.append(invocation)
-                # tool 角色消息必须带对应 tool_call_id
-                messages.append(
-                    {"role": "tool", "tool_call_id": tc.id, "content": tool_content}
+                            if isinstance(item, ToolCallItem):
+                                # 新的模型轮次：当上一个 item 不是 ToolCallItem 时
+                                if prev_item_type != "ToolCallItem":
+                                    turn_count += 1
+                                tool_name = ""
+                                raw = getattr(item, "raw_item", None)
+                                if raw:
+                                    name_attr = getattr(raw, "name", None)
+                                    if name_attr:
+                                        tool_name = name_attr
+                                    else:
+                                        func = getattr(raw, "function", None)
+                                        if func:
+                                            tool_name = getattr(func, "name", "")
+                                logger.info(
+                                    "[Turn %d/%d] 工具调用: http_check → %s",
+                                    turn_count, max_turns,
+                                    _short_args(getattr(raw, "arguments", "") or ""),
+                                )
+                                tool_call_count += 1
+
+                            elif isinstance(item, ToolCallOutputItem):
+                                logger.info("[Turn %d/%d] 工具结果返回", turn_count, max_turns)
+
+                            elif isinstance(item, MessageOutputItem):
+                                logger.info("[Turn %d/%d] 模型输出文本消息", turn_count, max_turns)
+
+                            else:
+                                logger.debug("[Runner 事件] RunItem: %s", item_type)
+
+                            prev_item_type = item_type
+
+                        elif type(event).__name__ == "AgentUpdatedStreamEvent":
+                            logger.debug("[Runner 事件] Agent 更新")
+                        else:
+                            logger.debug("[Runner 事件] %s", type(event).__name__)
+
+                except MaxTurnsExceeded:
+                    logger.info("[Runner] 达到最大轮数（%d），正常停止", max_turns)
+                    stopped_reason = f"达到最大轮数（{max_turns} 轮）"
+                except Exception as stream_exc:
+                    logger.error("Runner 流式事件异常：%s", stream_exc, exc_info=True)
+                    stopped_reason = f"Runner 异常：{stream_exc}"
+
+                # 从 stream 提取所有已收集的 items（即使 MaxTurnsExceeded 也能取到）
+                items: list[RunItem] = []
+                if hasattr(stream, "new_items"):
+                    items = list(stream.new_items)
+
+                # 如果还没设置停止原因，检查是否有其他异常
+                if stopped_reason == "未知":
+                    if stream.run_loop_exception is not None:
+                        exc = stream.run_loop_exception
+                        logger.error("Runner 异常：%s", exc)
+                        stopped_reason = f"Runner 异常：{exc}"
+                    else:
+                        stopped_reason = "模型结束（输出最终报告）"
+
+                invocations = _extract_tool_invocations(items)
+                final_text = _extract_final_text(items)
+                turns_used = max(turn_count, 1)
+                logger.info(
+                    "[Runner] 共 %d 轮，%d 次工具调用，%d 条 items",
+                    turns_used, len(invocations), len(items),
                 )
-        else:
-            # 达到轮数上限仍未结束：基于已有真实结果生成兜底报告。
-            stopped_reason = f"达到最大轮数 {self.settings.max_agent_turns}"
-            logger.warning(stopped_reason)
-            final_text = self._fallback_report(target, invocations, stopped_reason)
+
+        except Exception as exc:
+            logger.error("Agent 运行失败：%s", exc, exc_info=True)
+            stopped_reason = f"运行错误：{exc}"
+            final_text = self._generate_report(target, invocations, stopped_reason)
+
+        finally:
+            # 关闭 sandbox session（自动清理容器）
+            try:
+                await sandbox_session.aclose()
+                logger.info("Sandbox session 已关闭，容器已清理")
+            except Exception:
+                pass
 
         elapsed = time.monotonic() - started
-        logger.info("循环结束（%s），共 %d 次工具调用，耗时 %.1fs",
-                    stopped_reason, len(invocations), elapsed)
+        logger.info("=" * 60)
+        logger.info(
+            "循环结束（%s），共 %d 次工具调用，耗时 %.1fs",
+            stopped_reason, len(invocations), elapsed,
+        )
+        logger.info("=" * 60)
+
+        if not final_text:
+            final_text = self._generate_report(target, invocations, stopped_reason)
 
         report_path, trace_path = self._persist(
-            target, final_text, messages, invocations, stopped_reason, elapsed
+            target, final_text, invocations, stopped_reason, elapsed
         )
         return AgentRunResult(
             target=target,
             report_text=final_text,
             report_path=report_path,
             trace_path=trace_path,
-            turns_used=min(turn, self.settings.max_agent_turns),
+            turns_used=turns_used,
             stopped_reason=stopped_reason,
             invocations=invocations,
         )
 
-    # ------------------------------------------------------------------
     @staticmethod
-    def _fallback_report(
+    def _generate_report(
         target: str, invocations: list[ToolInvocation], reason: str
     ) -> str:
-        """模型异常/超轮时，基于真实执行记录生成兜底报告（不臆造漏洞）。"""
+        """基于真实执行记录生成测试报告（模型未输出最终报告时使用）。"""
         lines = [
-            "# 测试报告（兜底生成）",
+            "# 安全测试报告",
             "",
-            f"测试目标：{target}",
-            f"终止原因：{reason}",
+            f"**测试目标**：{target}",
+            f"**终止原因**：{reason}",
+            f"**工具调用次数**：{len(invocations)}",
             "",
-            "## 实际执行的测试操作",
+            "## 测试操作记录",
+            "",
         ]
+
         if not invocations:
             lines.append("- 无成功执行的工具调用")
-        for inv in invocations:
-            status = "成功" if inv.ok else f"失败（{inv.error}）"
-            lines.append(f"- 第{inv.turn}轮 {inv.name}({json.dumps(inv.arguments, ensure_ascii=False)}) -> {status}")
+        else:
+            for i, inv in enumerate(invocations, 1):
+                # 尝试解析参数中的 URL
+                url_info = ""
+                try:
+                    args = json.loads(inv.arguments) if inv.arguments else {}
+                    if isinstance(args, dict) and "url" in args:
+                        url_info = f" → {args['url']}"
+                        method = args.get("method", "GET")
+                        url_info = f" [{method}] {args['url']}"
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+                # 尝试解析输出中的关键信息
+                output_summary = ""
+                if inv.output:
+                    try:
+                        out = json.loads(inv.output)
+                        if isinstance(out, dict):
+                            status = out.get("status_code", "")
+                            missing = out.get("missing_security_headers", [])
+                            if status:
+                                output_summary = f" → HTTP {status}"
+                            if missing:
+                                output_summary += f"（缺失安全头: {', '.join(missing[:3])}）"
+                    except (json.JSONDecodeError, TypeError):
+                        output_summary = f" → {inv.output[:100]}"
+
+                lines.append(f"{i}. **{inv.name}**{url_info}{output_summary}")
+
         lines += [
             "",
             "## 测试结论",
-            "本次未取得可确认漏洞的充分证据；未发现可验证漏洞。",
-            "建议在模型服务恢复后重新运行，以完成完整流程。",
+            "",
+        ]
+
+        # 分析工具输出中的安全发现
+        security_findings = []
+        for inv in invocations:
+            if inv.output:
+                try:
+                    out = json.loads(inv.output)
+                    if isinstance(out, dict):
+                        missing = out.get("missing_security_headers", [])
+                        if missing:
+                            security_findings.append(
+                                f"- {inv.arguments}: 缺失安全响应头 {missing}"
+                            )
+                        status = out.get("status_code")
+                        if status and status == 200:
+                            pass  # 正常响应
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+        if security_findings:
+            lines.append("### 安全加固建议")
+            lines.extend(security_findings)
+        else:
+            lines.append("- 本次测试未发现可确认的漏洞证据。")
+
+        lines += [
+            "",
+            "## 说明",
+            f"本次测试共执行 {len(invocations)} 次工具调用，因 {reason} 而停止。",
+            "完整的模型分析报告需在增加轮数后重新运行获取。",
         ]
         return "\n".join(lines)
 
@@ -339,12 +578,11 @@ class AgentRunner:
         self,
         target: str,
         report_text: str,
-        messages: list[dict],
         invocations: list[ToolInvocation],
         reason: str,
         elapsed: float,
     ) -> tuple[Path, Path]:
-        """保存报告（.md）与执行轨迹（.json），返回路径。"""
+        """保存报告与执行轨迹。"""
         reports_dir = self.settings.reports_dir
         reports_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -356,20 +594,15 @@ class AgentRunner:
             "target": target,
             "stopped_reason": reason,
             "elapsed_seconds": round(elapsed, 3),
-            "model": self.settings.deepseek_model,
+            "model": self.settings.llm.model,
             "tool_invocations": [
                 {
-                    "turn": inv.turn,
                     "name": inv.name,
                     "arguments": inv.arguments,
-                    "ok": inv.ok,
-                    "result_summary": inv.result_summary,
-                    "data": inv.data,
-                    "error": inv.error,
+                    "output": inv.output[:2000],
                 }
                 for inv in invocations
             ],
-            "message_count": len(messages),
         }
         trace_path = reports_dir / f"trace_{stamp}.json"
         trace_path.write_text(

@@ -14,7 +14,7 @@
 | `strix/agents/prompts/system_prompt.jinja` | [Ben/agents/prompts/system_prompt.jinja](prompts/system_prompt.jinja) | ✅ 七节纪律 + 条件裁剪 + 三类知识位；`<specialized_knowledge>` 内每片 `<{{ 裸名 }}>` 包裹，目录一行式 `- category/name：说明` |
 | `strix/agents/prompts/scope.jinja` | [Ben/agents/prompts/scope.jinja](prompts/scope.jinja) | ✅ 授权目标 `{% for %}` 循环；`mcp_available/mcp_connections` 经 `system_prompt_context` 传入（与 strix 一致） |
 | `strix/skills/__init__.py` | [Ben/skills/__init__.py](../skills/__init__.py) | ✅ `<root>/<category>/<name>.md` 布局、`category/name` 限定名 + 裸名歧义检测、`register_skill_dir` 后注册者优先、frontmatter 剥除、`template: jinja` 渲染（StrictUndefined/trim_blocks/lstrip_blocks，同 strix `_SKILL_TEMPLATES`）、`validate_requested_skills` |
-| `strix/tools/load_skill/tool.py` | [Ben/tools/load_skill.py](../tools/load_skill.py) | ✅ `skills: list[str]`、单次最多 5 个、未知/歧义校验；Ben 侧走 ToolRegistry JSON Schema（`maxItems` + `additionalProperties:false`） |
+| `strix/tools/load_skill/tool.py` | [Ben/tools/function_tools/load_skill.py](../tools/function_tools/load_skill.py) | ✅ `skills: list[str]`、单次最多 5 个、未知/歧义校验；SDK `@function_tool` 从签名自动生成 JSON Schema 并校验（与 strix 同模式） |
 
 片段数据与加载器同居 `Ben/skills/`（对齐 strix/skills/ 布局；项目根不再
 单设 skills/ 目录）。分类目录对齐 strix 类目命名：`scan_modes/`（blackbox、
@@ -66,9 +66,10 @@ root（coordination/root_agent）/ 白盒（scan_modes/whitebox）；去重保�
 
 ## 对接与安全边界
 
-- runner 行为不变：`_load_prompt(target)` 返回一个字符串进 `messages[0]`。
+- runner 契约不变：`_load_prompt(target)` 仍返回一个字符串，经
+  `build_agent(instructions=...)` 作为 SDK agent 的 instructions 注入。
 - `load_skill` 只读：按名查表（裸名/限定名），不接受路径（免疫路径穿越），
-  经 ToolRegistry Schema 校验（list 参数、maxItems、拒绝多余属性）。
+  经 SDK `@function_tool` 自动 Schema 校验（list 参数、长度与多余参数拦截）。
 - Docker 沙箱、目标白名单校验、http_check 的 GET/HEAD 限制均未改动。
 - 依赖：`Jinja2==3.1.6`、`PyYAML==6.0.3` 已加入 requirements.txt。
 
