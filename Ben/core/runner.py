@@ -250,12 +250,14 @@ class AgentRunner:
             self.settings.prompts_dir,
             settings=self.settings,
             target=target,
+            coverage_tools=True,
         )
 
     def _build_context(self, target: str) -> dict:
         """构建工具运行时上下文（注入到 ctx.context）。
 
         工具通过 ctx.context 获取：
+          - agent_id: todo/notes 工具的调用者身份（对齐 strix，每 agent 私有 todo 列表）
           - allowed_targets: 授权白名单
           - command_timeout: 命令超时
           - target: 测试目标
@@ -264,6 +266,7 @@ class AgentRunner:
         它们在构建 Agent 时已由 Shell capability 绑定 live sandbox session。
         """
         return {
+            "agent_id": "ben-agent",
             "allowed_targets": self.settings.allowed_targets,
             "command_timeout": self.settings.command_timeout,
             "target": target,
@@ -347,10 +350,26 @@ class AgentRunner:
         logger.info("=" * 60)
         logger.info("阶段 5/6: 构建 Agent（Ben.agents.factory，shell 工具绑定 session）")
         logger.info("=" * 60)
+
+        # 水合 todos/notes/coverage 磁盘状态（对齐 strix core/runner.py：
+        # {state_dir}/todos.json、notes.json、coverage.json）。
+        # Ben 以 reports_dir 作为 state_dir 持久化。
+        from Ben.tools.coverage.tools import hydrate_coverage_from_disk
+        from Ben.tools.notes.tools import hydrate_notes_from_disk
+        from Ben.tools.todo.tools import hydrate_todos_from_disk
+
+        hydrate_todos_from_disk(self.settings.reports_dir)
+        hydrate_notes_from_disk(self.settings.reports_dir)
+        hydrate_coverage_from_disk(self.settings.reports_dir)
+
         agent = build_agent(
             instructions=system_prompt,
             sandbox_session=sandbox_session,
             allowed_targets=self.settings.allowed_targets,
+            tool_output_limits=(
+                self.settings.tool_output_max_lines,
+                self.settings.tool_output_max_bytes,
+            ),
         )
         logger.info(
             "Agent 已构建：%s, tools=%s",
@@ -369,6 +388,28 @@ class AgentRunner:
         try:
             async with sandbox_session:
                 logger.info("Sandbox session 已启动，容器就绪")
+
+                # 超大工具结果 spill 到沙箱工作区（对齐 strix core/runner.py
+                # _spill_to_workspace）：output_store.bound_and_store 经此
+                # writer 写 /workspace/.tool-output/<id>.txt，agent 用
+                # exec_command 按需读回。
+                import io
+
+                from Ben.tools.output_store import (
+                    WORKSPACE_SPILL_DIR,
+                    configure_spill_writer,
+                )
+
+                async def _spill_to_workspace(output_id: str, text: str) -> str | None:
+                    path = f"{WORKSPACE_SPILL_DIR}/{output_id}.txt"
+                    try:
+                        await sandbox_session.write(Path(path), io.BytesIO(text.encode("utf-8")))
+                    except Exception:
+                        logger.exception("failed to spill tool output to sandbox workspace")
+                        return None
+                    return path
+
+                configure_spill_writer(_spill_to_workspace)
 
                 # Caido bootstrap 与 runner 并发：解析宿主机侧映射端口，
                 # 后台任务拿 guest token + 建临时项目；proxy 工具首次调用时
@@ -532,6 +573,10 @@ class AgentRunner:
                 logger.info("Sandbox session 已关闭，容器已清理")
             except Exception:
                 pass
+            # 清除 spill writer（对齐 strix：run 结束后不再持有 session 引用）
+            from Ben.tools.output_store import configure_spill_writer
+
+            configure_spill_writer(None)
 
         elapsed = time.monotonic() - started
         logger.info("=" * 60)

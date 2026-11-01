@@ -132,6 +132,19 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("COMMAND_TIMEOUT"),
     )
 
+    # --- 工具输出上限（对齐 strix ContextSettings，供 output_store 截断/spill）---
+    tool_output_max_lines: int = Field(
+        default=2_000,
+        gt=0,
+        validation_alias=AliasChoices("TOOL_OUTPUT_MAX_LINES", "STRIX_TOOL_OUTPUT_MAX_LINES"),
+    )
+    # 下限高于截断通知本身的大小，保证预览一定放得下
+    tool_output_max_bytes: int = Field(
+        default=50 * 1024,
+        ge=1024,
+        validation_alias=AliasChoices("TOOL_OUTPUT_MAX_BYTES", "STRIX_TOOL_OUTPUT_MAX_BYTES"),
+    )
+
     # --- 输出 ---
     reports_dir: Path = Field(default=PROJECT_ROOT / "reports")
     prompts_dir: Path = Field(

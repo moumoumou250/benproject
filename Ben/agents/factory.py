@@ -48,8 +48,17 @@ from agents.sandbox.session.pty_types import PTY_YIELD_TIME_MS_MAX
 from agents.tool import FunctionTool, Tool
 from pydantic import ValidationError
 
+from Ben.tools.coverage.tools import list_coverage, record_coverage, update_coverage
 from Ben.tools.load_skill.tool import load_skill
 from Ben.tools.mcp.agent_tools import call_mcp, list_mcps
+from Ben.tools.notes.tools import (
+    create_note,
+    delete_note,
+    get_note,
+    list_notes,
+    update_note,
+)
+from Ben.tools.output_store import bound_and_store, bound_text
 from Ben.tools.proxy.tools import (
     list_requests,
     list_sitemap,
@@ -57,6 +66,15 @@ from Ben.tools.proxy.tools import (
     scope_rules,
     view_request,
     view_sitemap_entry,
+)
+from Ben.tools.thinking.tool import think
+from Ben.tools.todo.tools import (
+    create_todo,
+    delete_todo,
+    list_todos,
+    mark_todo_done,
+    mark_todo_pending,
+    update_todo,
 )
 
 logger = logging.getLogger(__name__)
@@ -72,10 +90,63 @@ _LOCAL_TOOLS: tuple[Tool, ...] = (
     list_sitemap,
     view_sitemap_entry,
     scope_rules,
+    think,
+    create_todo,
+    list_todos,
+    update_todo,
+    mark_todo_done,
+    mark_todo_pending,
+    delete_todo,
+    create_note,
+    list_notes,
+    get_note,
+    update_note,
+    delete_note,
+    record_coverage,
+    update_coverage,
+    list_coverage,
 )
 
 # max_output_tokens 上限（对齐 strix _apply_shell_output_cap 的 ceiling 语义）
 _MAX_OUTPUT_TOKENS_CEILING = 25_000
+
+
+# ---------------------------------------------------------------------------
+# 工具结果体积约束（对齐 strix factory 的 output_store 集成）
+# ---------------------------------------------------------------------------
+
+
+def _tool_output_limits(limits: tuple[int, int] | None) -> tuple[int, int]:
+    """(max_lines, max_bytes)；未显式传入时回退到 strix 默认值。"""
+    return limits if limits is not None else (2_000, 50 * 1024)
+
+
+async def _bound_result(result: Any, limits: tuple[int, int] | None) -> Any:
+    if not isinstance(result, str):
+        return result
+    max_lines, max_bytes = _tool_output_limits(limits)
+    return await bound_and_store(result, max_lines=max_lines, max_bytes=max_bytes)
+
+
+def _with_bounded_result(
+    tool: FunctionTool, limits: tuple[int, int] | None
+) -> FunctionTool:
+    """Cap a tool's result size before it enters history (idempotent).
+
+    对齐 strix _with_bounded_result：超大结果经 output_store 头尾截断，
+    完整内容 spill 到沙箱 /workspace/.tool-output/<id>.txt（spill writer
+    由 runner 在 session 就绪后经 configure_spill_writer 注入）。
+    """
+    if getattr(tool, "_ben_bounded", False):
+        return tool
+    invoke_tool = tool.on_invoke_tool
+
+    async def invoke(ctx: Any, raw_input: str) -> Any:
+        return await _bound_result(await invoke_tool(ctx, raw_input), limits)
+
+    tool.on_invoke_tool = invoke
+    tool._ben_bounded = True  # type: ignore[attr-defined]
+    return tool
 
 
 # ---------------------------------------------------------------------------
@@ -371,6 +442,7 @@ def build_agent(
     sandbox_session: Any,
     allowed_targets: tuple[str, ...] = (),
     extra_tools: Sequence[Tool] = (),
+    tool_output_limits: tuple[int, int] | None = None,
 ) -> Agent[Any]:
     """Return the Ben Agent: SDK shell 工具（绑定 session）+ Ben 本地工具。
 
@@ -378,6 +450,9 @@ def build_agent(
       exec_command / write_stdin（与 strix 同一实现）
     - ``allowed_targets``: 授权白名单，exec_command invoke 前逐主机校验
     - ``extra_tools``: 追加工具（默认挂载 load_skill/list_mcps/call_mcp）
+    - ``tool_output_limits``: (max_lines, max_bytes)——每个工具结果进入历史
+      前经 output_store 截断/spill（对齐 strix _with_bounded_result）；
+      None 时用 strix 默认值 (2000, 50KB)
     - ``model=None``: 模型解析推迟到 RunConfig
     - 不使用 SandboxAgent/capabilities 装配路径（chat_completions API 不支持
       hosted tools），这里手动 bind 后取 FunctionTool
@@ -388,6 +463,10 @@ def build_agent(
         *extra_tools,
     ]
     _ensure_unique_tool_names(tools)
+    tools = [
+        _with_bounded_result(t, tool_output_limits) if isinstance(t, FunctionTool) else t
+        for t in tools
+    ]
     logger.info("Built agent '%s' (tools=%d)", name, len(tools))
     return Agent(
         name=name,
