@@ -60,7 +60,7 @@ BenProject/
 │   │   └── check_docker_connection.py  # 连接自检脚本
 │   ├── tools/
 │   │   ├── registry.py         # 工具注册、Schema 校验、执行分发
-│   │   ├── http_check.py       # 只读 HTTP 连通性 + 响应头检查
+│   │   ├── (shell 工具由 SDK Shell capability 生成：exec_command/write_stdin)
 │   │   └── load_skill.py       # 只读知识片段加载（按名取 Ben/skills/ 正文）
 │   └── skills/                 # 知识片段目录（scan_modes / analysis / coordination / custom）
 ├── containers/                 # Docker 镜像构建资源

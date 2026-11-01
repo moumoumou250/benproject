@@ -4,16 +4,18 @@
 Agent 使用普通 ``Agent``（非 ``SandboxAgent``），因为 DeepSeek/GLM 端点只支持
 chat_completions API，不支持 SandboxAgent 的 hosted tools。
 
-Sandbox 容器仍由 SDK 的 ``DockerSandboxClient`` + ``SandboxSession`` 管理，
-但通过 ``ctx.context`` 注入到 @function_tool 工具中使用（http_check 通过
-session.exec() 在容器内执行 curl 命令）。
+Sandbox 容器由 SDK 的 ``DockerSandboxClient`` + ``SandboxSession`` 管理；
+shell 工具（exec_command/write_stdin）由 SDK ``Shell`` capability 绑定
+live session 生成（与 strix 同一实现），本地 @function_tool 仍经
+``ctx.context`` 读取授权白名单等配置。
 
 流程：
   用户输入目标
     -> 加载预设 Prompt（Jinja2 渲染）
     -> 配置 SDK 全局默认值（configure_sdk_model_defaults）
     -> 创建 SDK Docker sandbox client + session
-    -> 构建 Agent（factory.build_agent，含 4 个 @function_tool）
+    -> 构建 Agent（factory.build_agent：SDK Shell capability 绑定 session
+       生成 exec_command/write_stdin，外加 load_skill/mcp 本地工具）
     -> 构建 RunConfig（model only，无 sandbox 参数）
     -> Runner.run_streamed() 启动 agent 循环
     -> SDK 自动处理工具调用 / 结果回传 / 多轮对话
@@ -25,7 +27,8 @@ session.exec() 在容器内执行 curl 命令）。
   - Ben.config.settings      → 读取 .env，配置 SDK 全局默认值
   - Ben.agents.factory       → 构建 Agent（工具 + instructions）
   - Ben.agents.prompt        → Jinja2 渲染系统提示词
-  - Ben.tools.function_tools → @function_tool 工具（http_check/load_skill/mcp）
+  - Ben.tools.<family>.tool → 本地 @function_tool 工具（load_skill/mcp）；
+    shell 工具由 SDK Shell capability 生成
   - Ben.core.runner          → 编排：配置→agent→sandbox→RunConfig→Runner→报告
   - SDK sandbox              → Docker 容器生命周期 + exec 命令执行
 """
@@ -242,17 +245,18 @@ class AgentRunner:
             target=target,
         )
 
-    def _build_context(self, target: str, sandbox_session: object) -> dict:
+    def _build_context(self, target: str) -> dict:
         """构建工具运行时上下文（注入到 ctx.context）。
 
         工具通过 ctx.context 获取：
-          - sandbox_session: SDK 的 SandboxSession（用于 exec 命令）
           - allowed_targets: 授权白名单
           - command_timeout: 命令超时
           - target: 测试目标
+
+        shell 工具（exec_command/write_stdin）不再读 ctx.context——
+        它们在构建 Agent 时已由 Shell capability 绑定 live sandbox session。
         """
         return {
-            "sandbox_session": sandbox_session,
             "allowed_targets": self.settings.allowed_targets,
             "command_timeout": self.settings.command_timeout,
             "target": target,
@@ -294,20 +298,9 @@ class AgentRunner:
         system_prompt = self._load_prompt(target)
         logger.info("系统提示词已渲染（%d 字符）", len(system_prompt))
 
-        # === 阶段 4: 构建 Agent ===
+        # === 阶段 4: 创建 SDK Docker Sandbox ===
         logger.info("=" * 60)
-        logger.info("阶段 4/6: 构建 Agent（Ben.agents.factory）")
-        logger.info("=" * 60)
-        agent = build_agent(instructions=system_prompt)
-        logger.info(
-            "Agent 已构建：%s, tools=%s",
-            agent.name,
-            [t.name for t in agent.tools],
-        )
-
-        # === 阶段 5: 创建 SDK Docker Sandbox ===
-        logger.info("=" * 60)
-        logger.info("阶段 5/6: 创建 Docker Sandbox（SDK DockerSandboxClient）")
+        logger.info("阶段 4/6: 创建 Docker Sandbox（SDK DockerSandboxClient）")
         logger.info("=" * 60)
         import docker as docker_sdk
         # 使用Python Docker SDK连接Docker Engine
@@ -319,6 +312,21 @@ class AgentRunner:
         logger.info("创建 sandbox session（image=%s）...", self.settings.executor_image)
         # 创建Sandbox session
         sandbox_session = await sandbox_client.create(options=sandbox_opts)
+
+        # === 阶段 5: 构建 Agent（SDK Shell capability 绑定 live session） ===
+        logger.info("=" * 60)
+        logger.info("阶段 5/6: 构建 Agent（Ben.agents.factory，shell 工具绑定 session）")
+        logger.info("=" * 60)
+        agent = build_agent(
+            instructions=system_prompt,
+            sandbox_session=sandbox_session,
+            allowed_targets=self.settings.allowed_targets,
+        )
+        logger.info(
+            "Agent 已构建：%s, tools=%s",
+            agent.name,
+            [t.name for t in agent.tools],
+        )
 
         # 初始化任务运行变量
         max_turns = self.settings.max_agent_turns
@@ -332,7 +340,7 @@ class AgentRunner:
                 logger.info("Sandbox session 已启动，容器就绪")
 
                 # 构建运行时上下文
-                context = self._build_context(target, sandbox_session)
+                context = self._build_context(target)
 
                 # === 阶段 6: 启动 SDK Runner ===
                 logger.info("=" * 60)
@@ -376,10 +384,12 @@ class AgentRunner:
                 # 收集所有 run items + 流式日志
                 # SDK 在达到 max_turns 时会从 stream_events() 抛出 MaxTurnsExceeded，
                 # 但此时 stream.new_items 已包含已完成的工具调用与模型消息。
+                # 初始化统计变量
                 turn_count = 0
                 tool_call_count = 0
                 prev_item_type = None
                 try:
+                    # 遍历异步时间，
                     async for event in stream.stream_events():
                         if isinstance(event, RunItemStreamEvent):
                             item = event.item
@@ -400,8 +410,8 @@ class AgentRunner:
                                         if func:
                                             tool_name = getattr(func, "name", "")
                                 logger.info(
-                                    "[Turn %d/%d] 工具调用: http_check → %s",
-                                    turn_count, max_turns,
+                                    "[Turn %d/%d] 工具调用: %s → %s",
+                                    turn_count, max_turns, tool_name or "?",
                                     _short_args(getattr(raw, "arguments", "") or ""),
                                 )
                                 tool_call_count += 1

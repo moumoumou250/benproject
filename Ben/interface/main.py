@@ -22,9 +22,9 @@
     → Ben.core.runner          编排：SDK配置→Agent构建→Sandbox创建→Runner执行→报告
       → Ben.agents.prompt      Jinja2 渲染系统提示词
       → Ben.agents.factory     构建 Agent（@function_tool 工具，无 hosted tools）
-      → Ben.tools.function_tools  http_check/load_skill/list_mcps/call_mcp 工具
+      → Ben.tools.<family>.tool  load_skill/mcp 工具（shell 工具由 SDK Shell capability 生成）
       → SDK Runner.run_streamed  模型决策↔工具调用↔结果回传 多轮循环
-      → SDK DockerSandboxClient  Docker 容器生命周期 + exec 命令执行（经 ctx.context 注入工具）
+      → SDK DockerSandboxClient  Docker 容器生命周期 + exec 命令执行（shell 工具经 capability 绑定 session）
 """
 
 from __future__ import annotations
@@ -141,25 +141,28 @@ def _selftest_tools() -> int:
         session = await client.create(options=opts)
 
         async with session:
-            print(f"对授权目标执行 http_check：{target}")
-            from Ben.tools.function_tools.http_check import _build_curl, _parse_output
-
-            cmd = _build_curl(
-                url=target + "/",
-                method="GET",
-                follow_redirects=False,
-                headers={},
-                timeout=settings.command_timeout,
-            )
+            print(f"对授权目标执行 curl 检查：{target}")
+            cmd = [
+                "curl", "-sS", "-m", str(int(settings.command_timeout)),
+                "-D", "-", "-o", "/dev/null",
+                "-w", "__BEN_META__%{http_code}", "--", target + "/",
+            ]
             result = await session.exec(*cmd, timeout=settings.command_timeout + 5, shell=False)
 
             stdout = result.stdout.decode("utf-8", errors="replace") if isinstance(result.stdout, bytes) else str(result.stdout)
             if result.exit_code != 0:
                 print(f"[FAIL] curl 执行失败（exit={result.exit_code}）")
                 return 1
-            parsed = _parse_output(stdout)
-            print(f"状态码：{parsed.get('status_code')}")
-            print(f"响应头：{list(parsed.get('headers', {}).keys())[:5]}")
+            lines = [line for line in stdout.splitlines() if line.strip()]
+            meta = next((l for l in lines if l.startswith("__BEN_META__")), "")
+            status_code = meta.removeprefix("__BEN_META__") or "?"
+            header_names = [
+                l.split(":", 1)[0].strip()
+                for l in lines
+                if ":" in l and not l.startswith(("HTTP/", "__BEN_META__"))
+            ]
+            print(f"状态码：{status_code}")
+            print(f"响应头：{header_names[:5]}")
             print("ALL OK - 工具层真实执行正常")
             return 0
 
