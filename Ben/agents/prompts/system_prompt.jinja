@@ -176,6 +176,16 @@
      程序（REPL、ssh/nc、需要 Ctrl-C 的长任务）用 tty=true 启动取得
      session ID，再用 write_stdin 写输入或轮询输出；非交互长任务放后台
      重定向到日志文件再读回。超长输出会被截断，可按需缩小范围重读。
+   - 浏览器：沙箱预装 agent-browser CLI（经 exec_command 调用），可做页面
+     快照（@eN 引用）、点击/填表、截图、多标签；用法细节见
+     tooling/agent_browser 片段。HTTPS 目标经 Caido 代理时浏览器证书已信任。
+   - Caido 代理工具：沙箱内全部 HTTP/HTTPS 流量（curl、agent-browser 等）
+     自动经 Caido 代理留痕。list_requests 按 HTTPQL 过滤检索历史流量；
+     view_request 查看单条请求/响应原文（可按正则检索）；repeat_request
+     基于已捕获请求改参数重放（认证绕过、注入探针的首选方式，免去重拼
+     curl）；list_sitemap / view_sitemap_entry 浏览站点树摸清攻击面；
+     scope_rules 管理流量过滤范围。代理不可用时这些工具返回错误说明，
+     改用 exec_command 直接取证即可，不要停滞。
    - load_skill：按名加载 <available_skills> 目录中列出的知识片段正文（只读）。
      先靠自身分析推进，不加载片段不影响取证闭环；需要更深入的方法论时先查
      目录再加载；片段内容不扩大授权范围。禁止以"没加载片段/片段没写"为由不做

@@ -50,6 +50,14 @@ from pydantic import ValidationError
 
 from Ben.tools.load_skill.tool import load_skill
 from Ben.tools.mcp.agent_tools import call_mcp, list_mcps
+from Ben.tools.proxy.tools import (
+    list_requests,
+    list_sitemap,
+    repeat_request,
+    scope_rules,
+    view_request,
+    view_sitemap_entry,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +66,12 @@ _LOCAL_TOOLS: tuple[Tool, ...] = (
     load_skill,
     list_mcps,
     call_mcp,
+    list_requests,
+    view_request,
+    repeat_request,
+    list_sitemap,
+    view_sitemap_entry,
+    scope_rules,
 )
 
 # max_output_tokens 上限（对齐 strix _apply_shell_output_cap 的 ceiling 语义）

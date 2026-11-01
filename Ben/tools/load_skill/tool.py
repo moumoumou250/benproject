@@ -49,15 +49,18 @@ def load_skill(
     if err:
         return json.dumps({"ok": False, "error": err}, ensure_ascii=False)
 
-    # 为 jinja 片段构造渲染上下文
+    # 为 jinja 片段构造渲染上下文（strix 片段引用的能力开关在此给默认值：
+    # Ben 暂无 view_image / coverage 工具，对应分支渲染为关闭）
     context = {
+        "supports_images": False,
+        "coverage_tools": False,
         "system_prompt_context": {
             "authorized_targets": list(allowed_targets),
             "target": "",
             "model": "",
             "max_agent_turns": 0,
             "command_timeout": command_timeout,
-        }
+        },
     }
 
     sections: list[str] = []

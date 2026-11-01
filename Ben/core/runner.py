@@ -54,11 +54,18 @@ from agents.items import (
     ToolCallOutputItem,
 )
 from agents.model_settings import ModelSettings
-from agents.sandbox.sandboxes.docker import DockerSandboxClient, DockerSandboxClientOptions
+from agents.sandbox.manifest import Environment, Manifest
+from agents.sandbox.sandboxes.docker import DockerSandboxClientOptions
 
 from Ben.agents.factory import build_agent
 from Ben.agents.prompt import load_system_prompt
 from Ben.config import Settings, configure_sdk_model_defaults
+from Ben.runtime.caido import (
+    CONTAINER_CAIDO_PORT,
+    CaidoBootstrapHandle,
+    bootstrap_caido,
+)
+from Ben.runtime.docker_client import BenDockerSandboxClient
 
 logger = logging.getLogger(__name__)
 
@@ -298,20 +305,43 @@ class AgentRunner:
         system_prompt = self._load_prompt(target)
         logger.info("系统提示词已渲染（%d 字符）", len(system_prompt))
 
-        # === 阶段 4: 创建 SDK Docker Sandbox ===
+        # === 阶段 4: 创建 SDK Docker Sandbox（含 Caido 代理 sidecar） ===
         logger.info("=" * 60)
-        logger.info("阶段 4/6: 创建 Docker Sandbox（SDK DockerSandboxClient）")
+        logger.info("阶段 4/6: 创建 Docker Sandbox（BenDockerSandboxClient + Caido sidecar）")
         logger.info("=" * 60)
         import docker as docker_sdk
         # 使用Python Docker SDK连接Docker Engine
         dc = docker_sdk.from_env()
-        # 创建Sandbox客户端
-        sandbox_client = DockerSandboxClient(dc)
-        # 创建镜像
-        sandbox_opts = DockerSandboxClientOptions(image=self.settings.executor_image)
-        logger.info("创建 sandbox session（image=%s）...", self.settings.executor_image)
-        # 创建Sandbox session
-        sandbox_session = await sandbox_client.create(options=sandbox_opts)
+        # BenDockerSandboxClient 保留镜像 ENTRYPOINT（启动 caido-cli、写入
+        # 系统级代理环境变量），追加 NET_ADMIN/NET_RAW 与日志上限
+        sandbox_client = BenDockerSandboxClient(dc)
+        # Caido 作为容器内 sidecar 运行；session.exec 启动的进程自动继承
+        # 这些 env，HTTP(S) 流量全部经 Caido 留痕。NO_PROXY 防止
+        # agent-browser 的 localhost CDP 流量回环进 Caido。
+        container_caido_url = f"http://127.0.0.1:{CONTAINER_CAIDO_PORT}"
+        sandbox_manifest = Manifest(
+            environment=Environment(
+                value={
+                    "PYTHONUNBUFFERED": "1",
+                    "http_proxy": container_caido_url,
+                    "https_proxy": container_caido_url,
+                    "ALL_PROXY": container_caido_url,
+                    "NO_PROXY": "localhost,127.0.0.1",
+                },
+            ),
+        )
+        sandbox_opts = DockerSandboxClientOptions(
+            image=self.settings.executor_image,
+            exposed_ports=(CONTAINER_CAIDO_PORT,),
+        )
+        logger.info(
+            "创建 sandbox session（image=%s, caido_port=%d）...",
+            self.settings.executor_image,
+            CONTAINER_CAIDO_PORT,
+        )
+        sandbox_session = await sandbox_client.create(
+            options=sandbox_opts, manifest=sandbox_manifest
+        )
 
         # === 阶段 5: 构建 Agent（SDK Shell capability 绑定 live session） ===
         logger.info("=" * 60)
@@ -334,13 +364,35 @@ class AgentRunner:
         final_text = ""
         invocations: list[ToolInvocation] = []
         turns_used = max_turns
+        caido_handle: CaidoBootstrapHandle | None = None
 
         try:
             async with sandbox_session:
                 logger.info("Sandbox session 已启动，容器就绪")
 
-                # 构建运行时上下文
+                # Caido bootstrap 与 runner 并发：解析宿主机侧映射端口，
+                # 后台任务拿 guest token + 建临时项目；proxy 工具首次调用时
+                # 才经 handle.get() 等待结果（strix 的 CaidoBootstrapHandle 模式）。
+                caido_endpoint = await sandbox_session.resolve_exposed_port(
+                    CONTAINER_CAIDO_PORT
+                )
+                scheme = "https" if caido_endpoint.tls else "http"
+                host_caido_url = f"{scheme}://{caido_endpoint.host}:{caido_endpoint.port}"
+                caido_handle = CaidoBootstrapHandle(
+                    asyncio.create_task(
+                        bootstrap_caido(
+                            sandbox_session,
+                            host_url=host_caido_url,
+                            container_url=container_caido_url,
+                        ),
+                        name="caido-bootstrap",
+                    )
+                )
+                logger.info("Caido bootstrap 已启动（host=%s）", host_caido_url)
+
+                # 构建运行时上下文（proxy 工具经 ctx.context["caido_client"] 取句柄）
                 context = self._build_context(target)
+                context["caido_client"] = caido_handle
 
                 # === 阶段 6: 启动 SDK Runner ===
                 logger.info("=" * 60)
@@ -467,6 +519,13 @@ class AgentRunner:
             final_text = self._generate_report(target, invocations, stopped_reason)
 
         finally:
+            # 先收尾 Caido（取消在途 bootstrap 或关闭 client），再关 session
+            if caido_handle is not None:
+                try:
+                    await caido_handle.aclose()
+                    logger.info("Caido client 已关闭")
+                except Exception:
+                    pass
             # 关闭 sandbox session（自动清理容器）
             try:
                 await sandbox_session.aclose()
