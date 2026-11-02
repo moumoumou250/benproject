@@ -23,6 +23,10 @@ logger = logging.getLogger(__name__)
 # 默认配置路径（与 strix 的 ~/.strix/mcp-servers.json 对应）
 _DEFAULT_PATH: Path = Path.home() / ".ben" / "mcp-servers.json"
 _PATH_ENV_VAR = "BEN_MCP_CONFIG"
+# 单次运行的连接选择，由 --mcp-server / --mcp-exclude CLI 标志写入（对齐
+# strix 的 STRIX_MCP_ONLY / STRIX_MCP_EXCLUDE）。取值为逗号分隔的连接名。
+_ONLY_ENV_VAR = "BEN_MCP_ONLY"
+_EXCLUDE_ENV_VAR = "BEN_MCP_EXCLUDE"
 
 
 def _resolve_path(path: Path | None) -> Path:
@@ -33,6 +37,35 @@ def _resolve_path(path: Path | None) -> Path:
     if override:
         return Path(override)
     return _DEFAULT_PATH
+
+
+def _parse_names(env_var: str) -> set[str]:
+    return {name.strip() for name in os.environ.get(env_var, "").split(",") if name.strip()}
+
+
+def _apply_run_selection(configs: list[McpConnectionConfig]) -> list[McpConnectionConfig]:
+    """按可选的 include/exclude 选择收窄本次运行的连接（对齐 strix）。
+
+    BEN_MCP_ONLY（若设置）只保留点名连接；随后 BEN_MCP_EXCLUDE 再丢弃点名
+    连接。两者都未设置时保留全部连接。
+    """
+    only = _parse_names(_ONLY_ENV_VAR)
+    exclude = _parse_names(_EXCLUDE_ENV_VAR)
+    if not only and not exclude:
+        return configs
+
+    available = {config.name for config in configs}
+    for name in sorted((only | exclude) - available):
+        logger.warning("MCP 连接选择指定了未配置的连接名 %r，已忽略", name)
+
+    selected: list[McpConnectionConfig] = []
+    for config in configs:
+        if only and config.name not in only:
+            continue
+        if config.name in exclude:
+            continue
+        selected.append(config)
+    return selected
 
 
 def load_mcp_configs(path: Path | None = None) -> list[McpConnectionConfig]:
@@ -71,4 +104,4 @@ def load_mcp_configs(path: Path | None = None) -> list[McpConnectionConfig]:
             continue
         seen.add(config.name)
         configs.append(config)
-    return configs
+    return _apply_run_selection(configs)

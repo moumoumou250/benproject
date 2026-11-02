@@ -387,7 +387,7 @@ def build_sarif_document(
 def _apply_repository_context(run: dict[str, Any], context: dict[str, Any]) -> None:
     """Attach VCS provenance to a run for code-scanning alert binding.
 
-    ``automationDetails.id`` categorises the run (``strix/<owner>/<repo>``)
+    ``automationDetails.id`` categorises the run (``Ben/<owner>/<repo>``)
     so multiple Ben runs against the same repo reconcile rather than pile
     up. ``versionControlProvenance`` records the exact repo + commit + branch
     the findings came from. Both are omitted when the corresponding context
@@ -400,7 +400,7 @@ def _apply_repository_context(run: dict[str, Any], context: dict[str, Any]) -> N
     ref = _string_value(context.get("ref"))
 
     if full_name:
-        run["automationDetails"] = {"id": f"strix/{full_name}"}
+        run["automationDetails"] = {"id": f"Ben/{full_name}"}
 
     if uri:
         provenance: dict[str, Any] = {"repositoryUri": uri}
@@ -525,7 +525,7 @@ def _result_properties(
     if class_fingerprint:
         # Surfaced at top level so cross-rename dismissal tooling can
         # filter alerts by it without parsing the nested strix.* tree.
-        properties["strix_vuln_class_hash"] = class_fingerprint
+        properties["Ben_vuln_class_hash"] = class_fingerprint
     if is_synthetic:
         # Top-level so reviewers + downstream automation can filter
         # synthetic-anchored alerts without parsing the nested strix.*
@@ -577,7 +577,7 @@ def _result_properties(
         strix["poc"] = poc
 
     if strix:
-        properties["strix"] = strix
+        properties["Ben"] = strix
 
     return properties
 
@@ -642,7 +642,7 @@ def _build_fixes(report: dict[str, Any]) -> list[dict[str, Any]] | None:
 # Coverage
 # ---------------------------------------------------------------------------
 
-_COVERAGE_RULE_PREFIX = "strix-coverage"
+_COVERAGE_RULE_PREFIX = "Ben-coverage"
 
 # ``reported`` is absent on purpose: those surfaces are already in ``results``
 # as ``fail`` findings.
@@ -696,7 +696,7 @@ def _build_coverage_result(
         "message": {"text": message},
         "locations": [{"logicalLocations": [{"fullyQualifiedName": surface}]}],
         "properties": {
-            "strix": {
+            "Ben": {
                 "coverage_outcome": entry.get("outcome", ""),
                 "risk_area": risk_area,
                 "surface": surface,

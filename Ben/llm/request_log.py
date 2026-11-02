@@ -1348,7 +1348,7 @@ def _is_abandonment(exc: BaseException | None) -> bool:
 
 
 # Prefixes the reason a stream timeout gives when it cancels an attempt.
-CANCEL_REASON_PREFIX = "strix:"
+CANCEL_REASON_PREFIX = "Ben:"
 
 
 def _cancel_reason(exc: BaseException) -> str | None:

@@ -449,6 +449,16 @@ async def _with_timeouts(
             await _aclose(stream)
             logger.warning("%s; abandoning the turn", exc)
             raise
+        except Exception:
+            # 非超时异常穿透时同样关流并留下痕迹（此前静默穿透，排障时
+            # 无法区分"我们放弃回合"与"对端错误"）。
+            logger.warning(
+                "model stream aborted by non-timeout error after %.1fs; abandoning the turn",
+                time.monotonic() - started,
+                exc_info=True,
+            )
+            await _aclose(stream)
+            raise
         first_event = None
         yield event
 
@@ -472,7 +482,12 @@ async def _next_event(
     try:
         return await iterator.__anext__()
     except BaseException as exc:
-        if expired and task.uncancel() <= cancelling and isinstance(exc, asyncio.CancelledError):
+        # 以取消标志 expired 为准，而非异常类型：expire() 触发 task.cancel() 后，
+        # 内层 httpx 流可能把这次取消表现成它自己的 httpx.ReadTimeout 而非
+        # CancelledError。按异常类型判定会把"我们主动超时"误传成"对方读超时"，
+        # 上层因此不重试、按崩溃收尾。uncancel() 计数不高于进入时的值，
+        # 说明我们的取消是唯一取消源（无外部取消需要继续传播）。
+        if expired and task.uncancel() <= cancelling:
             raise TimeoutError(f"model stream hit {reason} ({limit:.0f}s)") from None
         raise
     finally:

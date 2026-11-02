@@ -1,4 +1,4 @@
-"""MCP 连接配置（最简版）。
+"""MCP 连接配置（对齐 strix 的 mcp/config.py 字段契约）。
 
 描述一个可连接的 MCP 服务器：传输方式（stdio/http）、启动命令或远程地址、
 可选 Bearer 令牌、可选工具白名单。字段命名与 strix 的 mcp-servers.json 保持
@@ -12,6 +12,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Literal
+
+
+DEFAULT_MAX_CONCURRENT_CALLS = 4
 
 
 @dataclass(frozen=True)
@@ -46,8 +49,23 @@ class McpConnectionConfig:
     allowed_tools: list[str] | None = None
     """工具白名单；None 表示暴露服务器列出的全部工具。"""
 
+    active_tools: list[str] = field(default_factory=list)
+    """与扫描相关的小子集，在搜索排名里优先于更大的白名单目录。"""
+
     notes: str | None = None
     """给 agent 的自由文本说明，描述这个连接是什么、怎么用。"""
+
+    http_timeout_seconds: float = 30.0
+    """HTTP 请求超时；SDK 默认 5 秒低于工具 p95 延迟。"""
+
+    sse_read_timeout_seconds: float = 300.0
+    """流式读取超时；SDK 默认 5 秒低于工具 p95 延迟。"""
+
+    session_timeout_seconds: float = 60.0
+    """MCP 操作超时（SQL 查询、云端 describe 扇出等）。"""
+
+    max_concurrent_calls: int = DEFAULT_MAX_CONCURRENT_CALLS
+    """同一连接名跨会话的最大并发调用数。"""
 
     @classmethod
     def from_dict(cls, raw: object) -> McpConnectionConfig:
@@ -103,9 +121,32 @@ class McpConnectionConfig:
         ):
             raise ValueError("allowed_tools 必须是字符串列表")
 
+        active = raw.get("active_tools", [])
+        if not isinstance(active, list) or not all(isinstance(t, str) for t in active):
+            raise ValueError("active_tools 必须是字符串列表")
+
         notes = raw.get("notes")
         if notes is not None and not isinstance(notes, str):
             raise ValueError("notes 必须是字符串")
+
+        http_timeout = raw.get("http_timeout_seconds", 30.0)
+        sse_read_timeout = raw.get("sse_read_timeout_seconds", 300.0)
+        session_timeout = raw.get("session_timeout_seconds", 60.0)
+        for field_name, value in (
+            ("http_timeout_seconds", http_timeout),
+            ("sse_read_timeout_seconds", sse_read_timeout),
+            ("session_timeout_seconds", session_timeout),
+        ):
+            if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
+                raise ValueError(f"{field_name} 必须是正数")
+
+        max_concurrent = raw.get("max_concurrent_calls", DEFAULT_MAX_CONCURRENT_CALLS)
+        if (
+            not isinstance(max_concurrent, int)
+            or isinstance(max_concurrent, bool)
+            or max_concurrent < 1
+        ):
+            raise ValueError("max_concurrent_calls 必须是 >= 1 的整数")
 
         return cls(
             name=name.strip(),
@@ -116,7 +157,12 @@ class McpConnectionConfig:
             env=dict(env),
             token=token,
             allowed_tools=list(allowed) if allowed is not None else None,
+            active_tools=list(active),
             notes=notes,
+            http_timeout_seconds=float(http_timeout),
+            sse_read_timeout_seconds=float(sse_read_timeout),
+            session_timeout_seconds=float(session_timeout),
+            max_concurrent_calls=max_concurrent,
         )
 
     def is_tool_allowed(self, tool_name: str) -> bool:

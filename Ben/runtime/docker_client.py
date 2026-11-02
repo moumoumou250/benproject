@@ -34,10 +34,34 @@ from agents.sandbox.sandboxes.docker import (
 )
 from docker.models.containers import Container  # type: ignore[import-untyped, unused-ignore]
 from docker.types import LogConfig  # type: ignore[import-untyped, unused-ignore]
+from docker.types import Mount as DockerSDKMount  # type: ignore[import-untyped, unused-ignore]
 from docker.utils import parse_repository_tag  # type: ignore[import-untyped, unused-ignore]
 
 
 logger = logging.getLogger(__name__)
+
+
+def _sandbox_security_kwargs(manifest: Manifest | None) -> dict[str, Any]:
+    """按 manifest 的挂载策略决定容器需要的设备与权限。
+
+    - FUSE 类挂载（fuse / mountpoint / rclone-fuse）需要 ``/dev/fuse``；
+    - NFS / S3 类挂载只需要 ``SYS_ADMIN``；
+    - 两者都必须解除 apparmor 限制，否则挂载被拒。
+
+    返回值直接 merge 进 ``containers.run(**kwargs)``。
+    """
+    if _manifest_requires_fuse(manifest):
+        return {
+            "devices": ["/dev/fuse"],
+            "cap_add": ["SYS_ADMIN"],
+            "security_opt": ["apparmor:unconfined"],
+        }
+    if _manifest_requires_sys_admin(manifest):
+        return {
+            "cap_add": ["SYS_ADMIN"],
+            "security_opt": ["apparmor:unconfined"],
+        }
+    return {}
 
 
 def _apply_log_limits(create_kwargs: dict[str, Any]) -> None:
@@ -53,6 +77,10 @@ def _apply_log_limits(create_kwargs: dict[str, Any]) -> None:
 
 
 class BenDockerSandboxClient(DockerSandboxClient):
+    # 宿主机目录 bind-mount 进容器，由 docker backend 在 ``create()`` 前写入。
+    # 每项为 ``{source, target, read_only}``。
+    ben_bind_mounts: list[dict[str, Any]] | None = None
+
     async def _create_container(
         self,
         image: str,
@@ -86,17 +114,7 @@ class BenDockerSandboxClient(DockerSandboxClient):
             )
             if docker_mounts:
                 create_kwargs["mounts"] = docker_mounts
-            if _manifest_requires_fuse(manifest):
-                create_kwargs.update(
-                    devices=["/dev/fuse"],
-                    cap_add=["SYS_ADMIN"],
-                    security_opt=["apparmor:unconfined"],
-                )
-            elif _manifest_requires_sys_admin(manifest):
-                create_kwargs.update(
-                    cap_add=["SYS_ADMIN"],
-                    security_opt=["apparmor:unconfined"],
-                )
+            create_kwargs.update(_sandbox_security_kwargs(manifest))
         if exposed_ports:
             create_kwargs["ports"] = {
                 _docker_port_key(port): ("127.0.0.1", None) for port in exposed_ports
@@ -116,6 +134,21 @@ class BenDockerSandboxClient(DockerSandboxClient):
         extra_hosts["host.docker.internal"] = "host-gateway"
 
         _apply_log_limits(create_kwargs)
+
+        # Ben injection：本地源码树 bind-mount，浅的排前面，嵌套的后挂载
+        # 使其覆盖在父树之上。
+        bind_mounts = self.ben_bind_mounts or ()
+        if bind_mounts:
+            mounts = create_kwargs.setdefault("mounts", [])
+            for spec in sorted(bind_mounts, key=lambda s: str(s["target"]).count("/")):
+                mounts.append(
+                    DockerSDKMount(
+                        target=spec["target"],
+                        source=spec["source"],
+                        type="bind",
+                        read_only=spec.get("read_only", False),
+                    )
+                )
 
         logger.debug(
             "Creating sandbox container: image=%s caps=%s exposed_ports=%s",

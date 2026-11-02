@@ -7,8 +7,9 @@
   （strix 版：含 request_log 安装、litellm 兼容、API 路由判定）。
 """
 
+from typing import Any
+
 from Ben.config.loader import apply_config_override, load_settings, persist_current
-from Ben.config.models import configure_sdk_model_defaults
 from Ben.config.settings import (
     ContextSettings,
     DedupeSettings,
@@ -34,3 +35,16 @@ __all__ = [
     "load_settings",
     "persist_current",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    """``models`` 会拉入整个 agents SDK，按需解析。
+
+    ``Ben.report`` 等轻量模块只用到 ``loader``/``settings``，导入本包时
+    不应顺带进入 SDK 的导入图（否则会和 import warm-up 线程抢导入锁）。
+    """
+    if name in ("configure_sdk_model_defaults", "BenProvider"):
+        from Ben.config import models
+
+        return getattr(models, name)
+    raise AttributeError(name)

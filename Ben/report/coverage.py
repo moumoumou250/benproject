@@ -75,66 +75,66 @@ _RISK_SKILL_CATEGORY = "vulnerabilities"
 #: own words, so a new skill is merely matched strictly, never crashed on —
 #: but add an entry, because a false gap asserts something untrue in a report.
 _SKILL_PHRASINGS: dict[str, tuple[str, ...]] = {
-    "agentic_system_security": (
+    "agentic-system-security": (
         "agentic",
         "agent tool",
         "mcp",
         "confused deputy",
         "tool invocation",
     ),
-    "argument_injection": ("argument injection", "option injection", "argv"),
-    "authentication_jwt": ("authentication", "jwt", "session"),
-    "broken_function_level_authorization": (
+    "argument-injection": ("argument injection", "option injection", "argv"),
+    "authentication-jwt": ("authentication", "jwt", "session"),
+    "broken-function-level-authorization": (
         "function level authorization",
         "authorization",
         "access control",
         "privilege escalation",
     ),
-    "browser_security": (
+    "browser-security": (
         "browser",
         "postmessage",
         "xs leak",
         "service worker",
         "cross origin state",
     ),
-    "business_logic": ("business logic", "logic flaw"),
+    "business-logic": ("business logic", "logic flaw"),
     "csrf": ("csrf", "cross site request forgery"),
-    "header_injection": ("header injection", "host header", "crlf"),
-    "http_request_smuggling": ("request smuggling", "desync"),
+    "header-injection": ("header injection", "host header", "crlf"),
+    "http-request-smuggling": ("request smuggling", "desync"),
     "idor": ("idor", "object level authorization", "bola", "direct object reference"),
-    "information_disclosure": (
+    "information-disclosure": (
         "information disclosure",
         "information leak",
         "sensitive data",
         "data exposure",
     ),
-    "insecure_deserialization": ("deserialization",),
-    "insecure_file_uploads": ("file upload",),
-    "llm_prompt_injection": ("prompt injection",),
-    "mass_assignment": ("mass assignment", "parameter binding"),
-    "nosql_injection": ("nosql",),
-    "open_redirect": ("redirect",),
-    "path_traversal_lfi_rfi": (
+    "insecure-deserialization": ("deserialization",),
+    "insecure-file-uploads": ("file upload",),
+    "llm-prompt-injection": ("prompt injection",),
+    "mass-assignment": ("mass assignment", "parameter binding"),
+    "nosql-injection": ("nosql",),
+    "open-redirect": ("redirect",),
+    "path-traversal-lfi-rfi": (
         "path traversal",
         "directory traversal",
         "file inclusion",
         "lfi",
         "rfi",
     ),
-    "prototype_pollution": ("prototype pollution",),
-    "race_conditions": ("race condition", "toctou"),
+    "prototype-pollution": ("prototype pollution",),
+    "race-conditions": ("race condition", "toctou"),
     "rce": ("rce", "remote code execution", "code execution", "command injection"),
-    "semantic_confusion": (
+    "semantic-confusion": (
         "semantic confusion",
         "parser differential",
         "normalization",
         "validator sink mismatch",
     ),
-    "sql_injection": ("sql injection", "sqli"),
+    "sql-injection": ("sql injection", "sqli"),
     "ssrf": ("ssrf", "server side request forgery"),
     "ssti": ("ssti", "template injection"),
-    "subdomain_takeover": ("subdomain takeover",),
-    "weak_password_detection": ("password", "credential", "brute force"),
+    "subdomain-takeover": ("subdomain takeover",),
+    "weak-password-detection": ("password", "credential", "brute force"),
     "xss": ("xss", "cross site scripting", "script injection"),
     "xxe": ("xxe", "xml external entity", "xml entity"),
 }
@@ -256,7 +256,8 @@ def skill_coverage_gaps(
         gaps.append(
             {
                 "kind": "unrecorded_risk_class",
-                "risk_area": skill.replace("_", " "),
+                # 技能名已从下划线迁移到连字符，两种分隔符都要展开成空格
+                "risk_area": skill.replace("-", " ").replace("_", " "),
                 "detail": (
                     f"Agent(s) {', '.join(sorted(set(agent_names)))} were assigned the "
                     f"'{skill}' skill, but no coverage entry records this class being "

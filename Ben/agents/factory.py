@@ -3,8 +3,10 @@
 与 strix 的差异（Ben 架构约束，刻意保留）：
 - 使用普通 ``Agent`` 而非 ``SandboxAgent``：DeepSeek/GLM 端点只支持
   chat_completions API，不能走 SandboxAgent 的 hosted tools 装配路径。
-  Shell capability 手动 ``bind(sandbox_session)`` 后取出 FunctionTool 挂载，
-  与 strix 的 ``_make_shell_configurator`` 等效。
+  Shell / Filesystem capability 手动 ``bind(sandbox_session)`` 后取出工具挂载，
+  与 strix 的 ``_make_shell_configurator`` / ``_make_filesystem_configurator``
+  等效；SDK 的 CustomTool（apply_patch）经 ``_custom_tool_as_function_tool``
+  转成 FunctionTool 以适配 chat_completions 路由。
 - ``_wrap_exec_command`` 前置授权白名单校验：命令中提取的每个主机名/IP
   都必须在 ``allowed_targets`` 内，否则拒绝执行（Ben 特有硬约束）。
 
@@ -17,26 +19,30 @@
   → ``_with_bounded_result``；shell 工具另加 ``_wrap_exec_command`` /
   ``_wrap_write_stdin`` / ``_function_tool_with_error_result``
 
-Ben 未移植的工具族（reporting / threat_model / web_search / wait_for_user）
-不在 _BASE_TOOLS 中；其余顺序与 strix 一致。
+已对齐的工具族含 threat_model / web_search / wait_for_user /
+view_image / apply_patch（patch），以及 mcp 发现/派发五件套
+（list_mcps / search_mcp_tools / get_mcp_tool_schema / describe_mcp /
+call_mcp，连接本身由 runner 装配进运行上下文）。
 """
 
 from __future__ import annotations
 
 import dataclasses
+import inspect
+import ipaddress
 import json
 import logging
 import re
 import time
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from agents import Agent
 from agents.agent import ToolsToFinalOutputResult
-from agents.sandbox.capabilities import Shell
+from agents.sandbox.capabilities import Filesystem, Shell
 from agents.sandbox.session.pty_types import PTY_YIELD_TIME_MS_MAX
-from agents.tool import FunctionTool, Tool
+from agents.tool import CustomTool, FunctionTool, Tool
 from pydantic import ValidationError
 
 from Ben.agents.prompt import render_system_prompt
@@ -53,7 +59,13 @@ from Ben.tools.agents_graph.tools import (
 from Ben.tools.coverage.tools import list_coverage, record_coverage, update_coverage
 from Ben.tools.finish.tool import finish_scan
 from Ben.tools.load_skill.tool import load_skill
-from Ben.tools.mcp.agent_tools import call_mcp, list_mcps
+from Ben.tools.mcp.agent_tools import (
+    call_mcp,
+    describe_mcp,
+    get_mcp_tool_schema,
+    list_mcps,
+    search_mcp_tools,
+)
 from Ben.tools.notes.tools import (
     create_note,
     delete_note,
@@ -71,7 +83,20 @@ from Ben.tools.proxy.tools import (
     view_request,
     view_sitemap_entry,
 )
+from Ben.tools.reporting.tool import (
+    create_dependency_report,
+    create_vulnerability_report,
+    delete_vulnerability_report,
+    get_report,
+    list_reports,
+    update_vulnerability_report,
+)
 from Ben.tools.thinking.tool import think
+from Ben.tools.threat_model.tools import (
+    amend_threat_model,
+    get_threat_model,
+    save_threat_model,
+)
 from Ben.tools.todo.tools import (
     create_todo,
     delete_todo,
@@ -80,10 +105,10 @@ from Ben.tools.todo.tools import (
     mark_todo_pending,
     update_todo,
 )
+from Ben.tools.wait_for_user.tool import wait_for_user
+from Ben.tools.web_search.tool import web_get_contents, web_search
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
-
     from agents import RunContextWrapper
     from agents.tool import FunctionToolResult
 
@@ -130,6 +155,88 @@ def _with_bounded_result(tool: FunctionTool) -> FunctionTool:
     tool.on_invoke_tool = invoke
     tool._ben_bounded = True  # type: ignore[attr-defined]
     return tool
+
+
+# ---------------------------------------------------------------------------
+# SDK CustomTool → FunctionTool 转换（对齐 strix factory；apply_patch 等
+# Responses custom tool 在 chat_completions 路由下必须以 function tool 暴露）
+# ---------------------------------------------------------------------------
+
+_CUSTOM_TOOL_INPUT_FIELD_BY_NAME = {
+    "apply_patch": "patch",
+}
+_DEFAULT_CUSTOM_TOOL_INPUT_FIELD = "input"
+
+
+def _custom_tool_input_field(tool: CustomTool) -> str:
+    return _CUSTOM_TOOL_INPUT_FIELD_BY_NAME.get(tool.name, _DEFAULT_CUSTOM_TOOL_INPUT_FIELD)
+
+
+def _raw_input_schema(tool: CustomTool) -> dict[str, Any]:
+    input_field = _custom_tool_input_field(tool)
+    return {
+        "type": "object",
+        "properties": {
+            input_field: {
+                "type": "string",
+                "description": (
+                    f"Complete `{tool.name}` payload. Follow the tool description exactly."
+                ),
+            },
+        },
+        "required": [input_field],
+        "additionalProperties": False,
+    }
+
+
+def _extract_custom_input(tool: CustomTool, raw_input: str | dict[str, Any]) -> str:
+    if isinstance(raw_input, str):
+        try:
+            parsed = json.loads(raw_input)
+        except json.JSONDecodeError:
+            return ""
+    else:
+        parsed = raw_input
+    value = parsed.get(_custom_tool_input_field(tool))
+    return value if isinstance(value, str) else ""
+
+
+def _custom_tool_as_function_tool(tool: CustomTool) -> FunctionTool:
+    async def invoke(ctx: Any, raw_input: str) -> Any:
+        custom_input = _extract_custom_input(tool, raw_input)
+        if not custom_input:
+            return f"`{_custom_tool_input_field(tool)}` must be a non-empty string."
+        try:
+            return await _bound_result(await tool.on_invoke_tool(ctx, custom_input))
+        except Exception as exc:  # noqa: BLE001 - matches SDK CustomTool error-as-result behavior.
+            logger.debug("Tool %s failed; returning error as result", tool.name, exc_info=True)
+            return _format_tool_error(exc)
+
+    needs_approval = tool.runtime_needs_approval()
+    function_needs_approval: bool | Callable[[Any, dict[str, Any], str], Awaitable[bool]]
+    if callable(needs_approval):
+
+        async def approve(ctx: Any, args: dict[str, Any], call_id: str) -> bool:
+            result = needs_approval(ctx, _extract_custom_input(tool, args), call_id)
+            if inspect.isawaitable(result):
+                result = await result
+            return bool(result)
+
+        function_needs_approval = approve
+    else:
+        function_needs_approval = needs_approval
+
+    return FunctionTool(
+        name=tool.name,
+        description=(
+            f"{tool.description}\n\n"
+            f"Pass the complete `{tool.name}` payload in `{_custom_tool_input_field(tool)}`."
+        ),
+        params_json_schema=_raw_input_schema(tool),
+        on_invoke_tool=invoke,
+        strict_json_schema=False,
+        needs_approval=function_needs_approval,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -280,38 +387,156 @@ def _function_tool_with_error_result(tool: FunctionTool) -> FunctionTool:
 # 回环/本机地址视为沙箱内部操作，不做白名单校验
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
 
-# 从命令字符串中提取网络目标的正则
-_URL_HOST_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9+.-]*://([A-Za-z0-9_.\-]+)(?::\d+)?")
 _DOMAIN_RE = re.compile(
     r"^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?"
     r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*\.[A-Za-z]{2,}$"
 )
 _IPV4_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
 
+# 网络客户端命令：命中后才施加只读方法与间接引用校验。
+# 末尾用「后接分隔符或行尾」而非 \b：\b 会把 `http.server`、`http.py`
+# 这类文件名/模块名误判成网络客户端（`python3 -m http.server` 曾被误拒）。
+_NET_CLIENT_RE = re.compile(
+    r"(?i)(?:^|[\s;|&(])"
+    r"(?:curl|wget|https?|nc|ncat|netcat|socat|nmap|masscan|ping|ping6|dig|nslookup|host|"
+    r"whois|traceroute|ssh|scp|sftp|telnet|ftp|smbclient|nikto|sqlmap|ffuf|gobuster|"
+    r"dirb|nuclei|wfuzz|httpx|openssl)"
+    r"(?=[\s;|&)]|$)"
+)
 
-def _extract_hosts(command: str) -> set[str]:
+# 这些标志的下一个参数是本地文件名（输出文件/输入清单），不是网络目标。
+# 只收「必然带一个文件名参数」的标志：curl 的 -f/-i/-w 是布尔标志，
+# 若收进来会把紧跟其后的 URL 一起跳过，形成绕过。
+_FILE_ARG_FLAGS = frozenset(
+    {
+        "-o", "-ox", "-og", "-oa", "-on", "-oi", "-oj", "-oh", "-os", "-oxml",
+        "-il", "--output", "--output-file", "--log", "--logfile",
+    }
+)
+
+# 显式 HTTP 方法标志：短标志 -X 大小写敏感（curl 的 -x 是代理），
+# 长标志 --request 大小写不敏感。
+_METHOD_SHORT_FLAG_RE = re.compile(r"(?:^|\s)-X\s*([A-Z]+)\b")
+_METHOD_LONG_FLAG_RE = re.compile(r"(?i)(?:^|\s)--request(?:\s*=\s*|\s+)([A-Z]+)\b")
+
+# 携带请求体/上传的标志（无论方法如何都视为写操作）。
+# 短标志必须大小写敏感：curl 的 -d 是 data（写）、-D 是 dump-header（读）；
+# -F 是 form（写）、-f 是 fail（读）；-T 是上传、-t 是 telnet-option。
+# 大小写不敏感会把 `curl -D -` 这类纯读取命令误拒。
+_PAYLOAD_SHORT_FLAG_RE = re.compile(r"(?:^|\s)(?:-d\b|-F\b|-T\b)")
+_PAYLOAD_LONG_FLAG_RE = re.compile(
+    r"(?i)(?:^|\s)(?:--data(?:-raw|-binary|-ascii|-urlencode)?(?:\s|=|$)"
+    r"|--form(?:-string)?(?:\s|=|$)|--upload-file(?:\s|=|$)"
+    r"|--json(?:\s|=|$)|--post-data(?:\s|=|$)|--post-file(?:\s|=|$))"
+)
+
+# shell 间接引用（变量/命令替换）：出现时无法静态确定真实目标
+_INDIRECTION_RE = re.compile(r"\$\{|\$\(|\$[A-Za-z_]|`")
+
+# 只读阶段允许的 HTTP 方法
+_READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+def _normalize_host(host: str) -> str:
+    """归一化主机字面量：整数/十六进制 IP 形式转为点分十进制。
+
+    curl 接受 ``http://2130706433/``、``http://0x7f000001/`` 等变形，
+    不归一化会绕过 IPv4 白名单比对。
+    """
+    host = host.lower().strip("[]")
+    try:
+        value = int(host, 0)
+    except ValueError:
+        return host
+    try:
+        return str(ipaddress.IPv4Address(value))
+    except ipaddress.AddressValueError:
+        return host
+
+
+def _extract_hosts(command: str, *, net_context: bool = True) -> set[str]:
     """从命令字符串中提取全部网络目标（URL 主机、域名、IPv4）。
 
+    URL 一律经 urlsplit 取 hostname：userinfo（``http://a@evil.com/``）、
+    端口、路径不会干扰主机判定；整数/十六进制 IP 归一化为点分十进制。
+
+    ``net_context=False``（命令未调用任何网络客户端）时只提取 URL 与 IPv4，
+    不把裸点号 token 当域名——否则 ``python main.py``、``cat notes.txt``、
+    ``nmap -oX out.xml`` 里的文件名会被误判成未授权目标而整条命令被拒。
+
     裸主机名（无点号的 docker 内部服务名，如 juice-shop）不匹配域名规则，
-    不会被误判为外网目标；版本号（1.2.3）等数字串不会匹配 IPv4。
+    不会被误判为外网目标。
     """
+    from urllib.parse import urlsplit
+
     hosts: set[str] = set()
-    for match in _URL_HOST_RE.finditer(command):
-        hosts.add(match.group(1).lower())
+    prev_token = ""
 
     for raw_token in re.split(r"\s+", command):
-        token = raw_token.strip("\"'`;|&()<>")
-        if "=" in token:  # key=value 形式只检查 value 部分
+        token = raw_token.strip("\"';|&()<>")
+        if "=" in token and "://" not in token.split("=", 1)[0]:
             token = token.split("=", 1)[1].strip("\"'")
-        if not token or "/" in token:  # 路径（含 /）不是主机
+        if not token:
+            prev_token = ""
             continue
+        # `-oX out.xml` 一类：文件名不是网络目标
+        skip_as_file = prev_token.lower() in _FILE_ARG_FLAGS
+        prev_token = token
+        if skip_as_file and "://" not in token:
+            continue
+        if "://" in token:
+            try:
+                hostname = urlsplit(token).hostname
+            except ValueError:
+                continue
+            if hostname:
+                hosts.add(_normalize_host(hostname))
+            continue
+        if "/" in token:  # 路径（含 /）不是主机
+            continue
+        if "@" in token:  # userinfo（ssh user@host）不参与主机判定
+            token = token.rsplit("@", 1)[1]
         if token.count(":") == 1:  # host:port 形式
             maybe_host, _, port = token.partition(":")
             if port.isdigit():
                 token = maybe_host
-        if _IPV4_RE.match(token) or _DOMAIN_RE.match(token):
+        if _IPV4_RE.match(token):
+            hosts.add(_normalize_host(token))
+        elif net_context and _DOMAIN_RE.match(token):
             hosts.add(token.lower())
     return hosts
+
+
+def _check_command_readonly(command: str) -> str | None:
+    """只读守卫（Ben 特有硬约束）：命中网络客户端且携带写语义时返回拒绝原因。
+
+    仅在命令调用网络客户端（curl/wget/http/nc/socat）时生效：
+    - 显式方法标志限 GET/HEAD/OPTIONS；
+    - 任何请求体/上传标志（-d/--data/-F/-T/--json/--post-*）一律拒绝。
+    """
+    if not _NET_CLIENT_RE.search(command):
+        return None
+    for match in _METHOD_SHORT_FLAG_RE.finditer(command):
+        method = match.group(1).upper()
+        if method not in _READ_METHODS:
+            return (
+                f"命令使用非只读 HTTP 方法 {method}"
+                f"（当前阶段仅允许 {'/'.join(sorted(_READ_METHODS))}）"
+            )
+    for match in _METHOD_LONG_FLAG_RE.finditer(command):
+        method = match.group(1).upper()
+        if method not in _READ_METHODS:
+            return (
+                f"命令使用非只读 HTTP 方法 {method}"
+                f"（当前阶段仅允许 {'/'.join(sorted(_READ_METHODS))}）"
+            )
+    payload = _PAYLOAD_SHORT_FLAG_RE.search(command) or _PAYLOAD_LONG_FLAG_RE.search(command)
+    if payload:
+        return (
+            f"命令包含写负载标志 {payload.group(0).strip()!r}"
+            "（只读阶段禁止携带请求体/上传内容）"
+        )
+    return None
 
 
 def _allowed_hostnames(allowed_targets: tuple[str, ...]) -> set[str]:
@@ -329,13 +554,33 @@ def _allowed_hostnames(allowed_targets: tuple[str, ...]) -> set[str]:
     return hosts
 
 
-def _check_command_allowed(command: str, allowed_targets: tuple[str, ...]) -> set[str]:
-    """返回命令中未授权的主机集合（空集合 = 通过）。"""
-    hosts = _extract_hosts(command) - _LOCAL_HOSTS
+def _check_command_allowed(command: str, allowed_targets: tuple[str, ...]) -> str | None:
+    """命令授权校验（Ben 特有硬约束）；返回拒绝原因，None = 通过。
+
+    三道闸门按序执行：
+      1. 只读守卫：网络客户端不得携带写方法/写负载；
+      2. 间接引用：含变量/命令替换时无法静态确定真实目标，一律拒绝；
+      3. 主机白名单：命令中每个主机名/IP 都必须在白名单内。
+    """
+    reason = _check_command_readonly(command)
+    if reason:
+        return reason
+
+    net_context = bool(_NET_CLIENT_RE.search(command))
+    if net_context and _INDIRECTION_RE.search(command):
+        return "命令包含 shell 变量/命令替换，无法静态确认网络目标，请展开后重试"
+
+    hosts = _extract_hosts(command, net_context=net_context) - _LOCAL_HOSTS
     if not hosts:
-        return set()
+        return None
     allowed = _allowed_hostnames(allowed_targets)
-    return {h for h in hosts if h not in allowed}
+    unauthorized = {h for h in hosts if h not in allowed}
+    if unauthorized:
+        return (
+            f"命令包含未授权目标 {sorted(unauthorized)}，已拒绝执行。"
+            f"授权范围：{sorted(allowed)}"
+        )
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -486,16 +731,10 @@ def _wrap_exec_command(tool: FunctionTool, *, allowed_targets: tuple[str, ...]) 
         if isinstance(parsed, dict):
             cmd = parsed.get("cmd")
             if isinstance(cmd, str):
-                unauthorized = _check_command_allowed(cmd, allowed_targets)
-                if unauthorized:
+                denial = _check_command_allowed(cmd, allowed_targets)
+                if denial:
                     return json.dumps(
-                        {
-                            "ok": False,
-                            "error": (
-                                f"命令包含未授权目标 {sorted(unauthorized)}，已拒绝执行。"
-                                f"授权范围：{sorted(_allowed_hostnames(allowed_targets))}"
-                            ),
-                        },
+                        {"ok": False, "error": denial},
                         ensure_ascii=False,
                     )
             if "shell" not in parsed:
@@ -560,19 +799,54 @@ def _configure_shell_tools(
         setattr(toolset, name, wrapped)
 
 
+def _configure_filesystem_tools(
+    toolset: Any, *, strict_schemas: bool = True, supports_images: bool = True
+) -> None:
+    """对齐 strix _configure_filesystem_tools：逐个包装 SDK 生成的文件系统工具。
+
+    Ben 恒为 chat_completions 路由：CustomTool（apply_patch）转成
+    FunctionTool，FunctionTool（view_image）走常规包装链；模型不支持
+    视觉时禁用 view_image。
+    """
+    for name, tool in vars(toolset).items():
+        if isinstance(tool, CustomTool):
+            setattr(toolset, name, _custom_tool_as_function_tool(tool))
+        elif isinstance(tool, FunctionTool):
+            setattr(
+                toolset,
+                name,
+                _function_tool_with_error_result(
+                    _with_strictness(_with_coerced_arguments(tool), strict_schemas)
+                ),
+            )
+    if not supports_images:
+        toolset.view_image.is_enabled = False
+
+
 # ---------------------------------------------------------------------------
 # 生命周期工具结束判定（对齐 strix 的 tool_use_behavior）
 # ---------------------------------------------------------------------------
 
-# 通过"停泊"而非结束扫描来交出控制权的工具（Ben 未移植 wait_for_user）
-_PARKING_TOOLS: frozenset[str] = frozenset({"wait_for_agents"})
+# 通过"停泊"而非结束扫描来交出控制权的工具
+_PARKING_TOOLS: frozenset[str] = frozenset({"wait_for_user", "wait_for_agents"})
+
+# 完成标志键：内置结束工具各用其一；自定义 finish_tool（如 finish_pr_review）
+# 用任一即可——否则自定义结束工具挂上了却永远不会终止运行。
+_COMPLETION_KEYS: tuple[str, ...] = (
+    "scan_completed",
+    "agent_completed",
+    "review_completed",
+)
 
 
 def _lifecycle_tool_completed(tool_name: str, output: Any) -> bool:
     if tool_name == "agent_finish":
-        completion_key = "agent_completed"
+        keys: tuple[str, ...] = ("agent_completed",)
     elif tool_name == "finish_scan":
-        completion_key = "scan_completed"
+        keys = ("scan_completed",)
+    elif tool_name.startswith("finish_"):
+        # 自定义结束工具：接受任一完成标志
+        keys = _COMPLETION_KEYS
     else:
         return False
 
@@ -582,7 +856,11 @@ def _lifecycle_tool_completed(tool_name: str, output: Any) -> bool:
         parsed = json.loads(output)
     except (TypeError, ValueError):
         return False
-    return bool(isinstance(parsed, dict) and parsed.get("success") and parsed.get(completion_key))
+    return bool(
+        isinstance(parsed, dict)
+        and parsed.get("success")
+        and any(parsed.get(key) for key in keys)
+    )
 
 
 def _wait_tool_parked(tool_name: str, output: Any) -> bool:
@@ -636,8 +914,7 @@ def _without_coverage_step(tool: FunctionTool) -> FunctionTool:
     return dataclasses.replace(tool, description=description)
 
 
-# 顺序对齐 strix _BASE_TOOLS；Ben 未移植的族（threat_model / web_search /
-# reporting / wait_for_user / mcp 扩展查询）不在其中。
+# 顺序对齐 strix _BASE_TOOLS（scope_rules 后挂 MCP 发现/派发五件套）。
 _BASE_TOOLS: tuple[Tool, ...] = (
     think,
     load_skill,
@@ -655,6 +932,17 @@ _BASE_TOOLS: tuple[Tool, ...] = (
     record_coverage,
     update_coverage,
     list_coverage,
+    get_threat_model,
+    save_threat_model,
+    amend_threat_model,
+    web_search,
+    web_get_contents,
+    create_vulnerability_report,
+    create_dependency_report,
+    update_vulnerability_report,
+    delete_vulnerability_report,
+    list_reports,
+    get_report,
     list_requests,
     view_request,
     repeat_request,
@@ -662,6 +950,9 @@ _BASE_TOOLS: tuple[Tool, ...] = (
     view_sitemap_entry,
     scope_rules,
     list_mcps,
+    search_mcp_tools,
+    get_mcp_tool_schema,
+    describe_mcp,
     call_mcp,
     view_agent_graph,
     send_message_to_agent,
@@ -732,6 +1023,27 @@ def _make_shell_tools(
     return shell.tools()
 
 
+def _make_filesystem_tools(
+    sandbox_session: Any,
+    *,
+    strict_schemas: bool = True,
+    supports_images: bool = True,
+) -> list[Tool]:
+    """从 SDK Filesystem capability 生成绑定到 live session 的文件系统工具。
+
+    对齐 strix：capability.bind(session) 后 tools() 生成 view_image +
+    apply_patch（chat_completions 路由下转成 FunctionTool，输入字段名
+    ``patch``）；模型不支持视觉时 view_image 挂载但禁用。
+    """
+    filesystem = Filesystem(
+        configure_tools=lambda toolset: _configure_filesystem_tools(
+            toolset, strict_schemas=strict_schemas, supports_images=supports_images
+        )
+    )
+    filesystem.bind(sandbox_session)
+    return filesystem.tools()
+
+
 def build_agent(
     *,
     name: str = "agent",
@@ -779,12 +1091,15 @@ def build_agent(
             parallel_tool_calls=parallel_tool_calls,
             system_prompt_context=system_prompt_context,
             supports_images=supports_images,
-            report_tool=False,
+            report_tool=True,
             coverage_tools=coverage_tools,
             prompts_dir=prompts_dir,
         )
 
     agent_tools = [*_EXTRA_TOOLS, *(extra_tools or [])]
+    if interactive:
+        # 只有附着了用户时，交还控制权才有意义（对齐 strix）。
+        agent_tools.append(wait_for_user)
     base_tools = list(_BASE_TOOLS)
     if not coverage_tools:
         base_tools = [t for t in base_tools if t not in _COVERAGE_TOOLS]
@@ -794,9 +1109,15 @@ def build_agent(
         tools: list[Tool] = [*base_tools, *agent_tools, finish_tool]
     else:
         tools = [*base_tools, *agent_tools, agent_finish]
-    # shell 工具由 SDK capability 绑定 session 生成（Ben 手动 bind），置于最前
+    # shell / filesystem 工具由 SDK capability 绑定 session 生成（Ben 手动
+    # bind），置于最前
     tools = [
         *_make_shell_tools(sandbox_session, allowed_targets, strict_schemas=strict_tool_schemas),
+        *_make_filesystem_tools(
+            sandbox_session,
+            strict_schemas=strict_tool_schemas,
+            supports_images=supports_images,
+        ),
         *tools,
     ]
     _ensure_unique_tool_names(tools)

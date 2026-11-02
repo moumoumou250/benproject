@@ -7,6 +7,7 @@ import contextlib
 import inspect
 import logging
 import re
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import replace
@@ -16,6 +17,7 @@ from typing import TYPE_CHECKING, Any, cast
 from agents import ItemHelpers, MessageOutputItem, RunConfig, Runner
 from agents.exceptions import AgentsException, MaxTurnsExceeded, UserError
 from agents.sandbox.errors import ExecTransportError
+import httpx
 from openai import (
     APIConnectionError,
     APIError,
@@ -165,6 +167,12 @@ def _with_image_scrub(run_config: RunConfig, context: dict[str, Any]) -> RunConf
 _MAX_TRANSIENT_MODEL_RETRIES = 5
 _TRANSIENT_MODEL_RETRY_BASE_DELAY_S = 2.0
 _TRANSIENT_MODEL_RETRY_MAX_DELAY_S = 90.0
+# 墙钟预算：一次运行中瞬态重试的累计耗时上限（含 sleep 与重放本身）。
+# 职责边界：SDK 层 DEFAULT_MODEL_RETRY 在单个请求内原地重试（便宜、
+# 不丢回合进度）；本层是回合级重放（贵，多 agent 并发时代价成倍放大）。
+# 仅靠次数上限时，单次重放可能挂起几十分钟（慢响应/半开连接）——
+# 预算保证整段重试在该时长内收手并走失败路径，与次数上限取先到者。
+_TRANSIENT_MODEL_RETRY_BUDGET_S = 480.0
 
 
 def _model_error_status_code(exc: BaseException) -> int | None:
@@ -185,14 +193,46 @@ def _is_transient_model_error(exc: BaseException) -> bool:
         exc, APITimeoutError | APIConnectionError | TimeoutError | ConnectionError | OSError
     ):
         return True
+    # 裸 httpx 传输层错误：openai SDK 未包装时直接穿透（常见于流式读取中
+    # 内层抛出 httpx.ReadTimeout），同样按瞬态处理而非崩溃。
+    if isinstance(exc, httpx.TimeoutException | httpx.TransportError):
+        return True
     code = _model_error_status_code(exc)
     if code is not None:
         return code >= 400 and code not in (401, 402, 403, 404)
     return isinstance(exc, APIError)
 
 
-def _transient_model_retry_delay(attempt: int) -> float:
+def _retry_after_seconds(exc: BaseException) -> float | None:
+    """读取服务端建议的等待秒数：优先 Retry-After 响应头，
+    退化到错误文案里的 "try again after N second(s)"（Kimi 429 格式）。"""
+    headers = getattr(exc, "headers", None)
+    if headers is None:
+        headers = getattr(getattr(exc, "response", None), "headers", None)
+    if headers is not None:
+        try:
+            raw = headers.get("retry-after")
+        except AttributeError:
+            raw = None
+        if raw:
+            try:
+                return max(0.0, float(str(raw).strip()))
+            except ValueError:
+                pass
+    match = re.search(r"try again after\s+(\d+(?:\.\d+)?)\s*second", str(exc), re.IGNORECASE)
+    if match:
+        return float(match.group(1))
+    return None
+
+
+def _transient_model_retry_delay(attempt: int, exc: BaseException | None = None) -> float:
     delay = _TRANSIENT_MODEL_RETRY_BASE_DELAY_S * float(2 ** (attempt - 1))
+    if exc is not None:
+        hinted = _retry_after_seconds(exc)
+        if hinted is not None:
+            # 尊重服务端节奏，但不低于自己的指数退避曲线（连续触发时
+            # 提示值往往不变，退避曲线仍在增长）。
+            delay = max(delay, hinted)
     return min(delay, _TRANSIENT_MODEL_RETRY_MAX_DELAY_S)
 
 
@@ -775,6 +815,7 @@ async def _run_cycle(  # noqa: PLR0912, PLR0915
     image_strips = 0
     compactions = 0
     model_retries = 0
+    model_retry_started: float | None = None
     request_log.set_retry_attempt(0)
     while True:
         stream: Any = None
@@ -889,23 +930,42 @@ async def _run_cycle(  # noqa: PLR0912, PLR0915
                     )
                     input_data = []
                     continue
-            if model_retries < _MAX_TRANSIENT_MODEL_RETRIES and _is_transient_model_error(exc):
-                model_retries += 1
-                delay = _transient_model_retry_delay(model_retries)
-                logger.warning(
-                    "transient model/provider error for %s; replaying turn "
-                    "(attempt %d/%d, backoff %.1fs): %r",
+            if _is_transient_model_error(exc):
+                if model_retry_started is None:
+                    model_retry_started = time.monotonic()
+                delay = _transient_model_retry_delay(model_retries + 1, exc)
+                budget_spent = time.monotonic() - model_retry_started
+                if (
+                    model_retries < _MAX_TRANSIENT_MODEL_RETRIES
+                    and budget_spent + delay <= _TRANSIENT_MODEL_RETRY_BUDGET_S
+                ):
+                    model_retries += 1
+                    logger.warning(
+                        "transient model/provider error for %s; replaying turn "
+                        "(attempt %d/%d, backoff %.1fs, retry budget %.0f/%.0fs): %r",
+                        agent_id,
+                        model_retries,
+                        _MAX_TRANSIENT_MODEL_RETRIES,
+                        delay,
+                        budget_spent,
+                        _TRANSIENT_MODEL_RETRY_BUDGET_S,
+                        exc,
+                    )
+                    await asyncio.sleep(delay)
+                    request_log.set_retry_attempt(model_retries)
+                    if session is not None:
+                        input_data = []
+                    continue
+                logger.error(
+                    "transient model/provider error for %s but retry budget exhausted "
+                    "(retries=%d/%d, spent=%.0fs of %.0fs); giving up: %r",
                     agent_id,
                     model_retries,
                     _MAX_TRANSIENT_MODEL_RETRIES,
-                    delay,
+                    budget_spent,
+                    _TRANSIENT_MODEL_RETRY_BUDGET_S,
                     exc,
                 )
-                await asyncio.sleep(delay)
-                request_log.set_retry_attempt(model_retries)
-                if session is not None:
-                    input_data = []
-                continue
             if session is not None:
                 await _salvage_stream_to_session(session, pre_run_items, stream, agent_id)
             if isinstance(exc, ProviderRefusalError):

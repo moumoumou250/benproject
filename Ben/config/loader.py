@@ -47,15 +47,20 @@ def load_settings(*, require_api_key: bool = False) -> Settings:
     if _cached is None:
         source_path = _override or _DEFAULT_PATH
         init_kwargs: dict[str, Any] = _read_json_overrides(source_path)
+        json_keys = sum(len(v) for v in init_kwargs.values())
+        # BEN_ENV_FILE 由 settings 的 source 层统一处理（对子模型同样生效）
         _cached = Settings(**init_kwargs)
         logger.debug(
             "load_settings: resolved (override=%s, file_used=%s, json_keys=%d)",
             _override is not None,
             source_path.exists(),
-            sum(len(v) for v in init_kwargs.values()),
+            json_keys,
         )
-    if require_api_key and not _cached.llm.api_key:
-        raise ValueError("缺少 API Key：请复制 .env.example 为 .env 并填写 DEEPSEEK_API_KEY")
+    if require_api_key and not _cached.llm.api_key and not _cached.llm.vendor_key_sufficient():
+        raise ValueError(
+            "缺少 API Key：.env 中设置 LLM_API_KEY，"
+            "或使用带前缀模型并配置厂商专属变量（如 MOONSHOT_API_KEY）"
+        )
     return _cached
 
 

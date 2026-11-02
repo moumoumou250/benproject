@@ -1,0 +1,14 @@
+[
+  {
+    "name": "slow_stdio",
+    "transport": "stdio",
+    "command": "cmd.exe",
+    "args": [
+      "/c",
+      "timeout /t 10 /nobreak >nul & \"C:\\Users\\19219\\AppData\\Local\\Microsoft\\WinGet\\Packages\\OpenJS.NodeJS.LTS_Microsoft.Winget.Source_8wekyb3d8bbwe\\node-v24.20.0-win-x64\\node.exe\" \"C:\\Users\\19219\\WorkBuddy\\BenProject\\mcp_servers\\filesystem\\node_modules\\@modelcontextprotocol\\server-filesystem\\dist\\index.js\" \"C:\\Users\\19219\\WorkBuddy\\BenProject\""
+    ],
+    "session_timeout_seconds": 60,
+    "allowed_tools": ["list_allowed_directories"],
+    "notes": "故意延迟 10 秒启动；session_timeout_seconds 设为 60"
+  }
+]

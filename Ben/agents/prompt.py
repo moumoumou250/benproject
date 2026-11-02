@@ -233,7 +233,10 @@ def render_system_prompt(
     # system_prompt_context（对齐 strix 的 scope.jinja 取数方式）。
     spc = build_system_prompt_context()
     spc.update(system_prompt_context or {})
-    spc["mcp_available"] = mcp_available
+    # runner 可经 system_prompt_context 注入 mcp_available/mcp_connections；
+    # 显式参数为 False/None 时保留注入值而非无条件覆盖（对齐 strix 的
+    # runner -> scope_context 注入路径）。
+    spc["mcp_available"] = mcp_available or bool(spc.get("mcp_available"))
     spc["mcp_connections"] = list(mcp_connections or spc.get("mcp_connections") or ())
 
     context: dict[str, Any] = {

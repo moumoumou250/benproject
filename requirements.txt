@@ -32,3 +32,12 @@ Jinja2==3.1.6
 
 # 知识片段 .md 的 YAML frontmatter 解析
 PyYAML==6.0.3
+
+# HTTP 客户端（web_search 工具、codex 配置、api_spec 抓取）
+requests==2.34.2
+
+# Caido GraphQL API 客户端（代理流量留痕工具与 runtime bootstrap）
+caido-sdk-client>=0.2.0,<0.3
+
+# CVSS 3.1 向量评分计算（reporting 工具的漏洞定级）
+cvss>=3.2

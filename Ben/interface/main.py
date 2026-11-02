@@ -4,6 +4,20 @@
   # 正常任务（对授权目标跑完整 Agent 流程）
   .venv/Scripts/python.exe main.py http://117.72.199.2:3000/
 
+  # 多目标 / 白盒（本地源码 + 部署实例）
+  .venv/Scripts/python.exe main.py -t ./my-project -t https://staging.example.com
+  .venv/Scripts/python.exe main.py --target-list ./targets.txt --scan-mode quick
+
+  # diff 范围（PR 变更文件优先）
+  .venv/Scripts/python.exe main.py -t ./my-project --scope-mode diff --diff-base origin/main
+
+  # 断点续扫（按 run 名称恢复 strix_runs/ 下的既往扫描）
+  .venv/Scripts/python.exe main.py --resume ben_20261102_101530_ab12cd34
+  .venv/Scripts/python.exe main.py --resume ben_20261102_101530_ab12cd34 --instruction "换个方向：重点测 IDOR"
+
+  # 交互模式（agent 可 wait_for_user 交还控制权）
+  .venv/Scripts/python.exe main.py -t https://staging.example.com --interactive
+
   # 仅验证 Docker 执行器（不需要 API Key）
   .venv/Scripts/python.exe main.py --selftest-docker
 
@@ -32,6 +46,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 # Windows asyncio 兼容
@@ -45,25 +60,27 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 # ── .env 优先级修复 ──────────────────────────────────────────────
-# 外部进程可能注入 BEN_LLM 等环境变量，其优先级高于 .env 文件，
-# 导致 .env 中的 DEEPSEEK_MODEL 被覆盖。
-# 在此先从 .env 加载，用 .env 中的值回写环境变量，保证 .env 配置生效。
+# 外部进程可能注入 BEN_LLM 等环境变量，其优先级高于 .env 文件。
+# 在此先从 .env 加载；对同一字段的多个别名（厂商中立名 + 历史名），
+# 只要 .env 里出现了其中任意一个，就把它的值同步到该字段的全部别名，
+# 保证 .env 配置永远赢过外部环境变量残留。
+from dotenv import dotenv_values as _dotenv_values  # noqa: E402
 from dotenv import load_dotenv as _load_dotenv  # noqa: E402
 
 _dotenv_path = PROJECT_ROOT / ".env"
 if _dotenv_path.exists():
     _load_dotenv(_dotenv_path, override=False)  # 不覆盖已有的 env var
-    # .env 中的 DEEPSEEK_* 若存在，同步到 BEN_LLM/LLM_* 等别名，
-    # 防止外部注入的 BEN_LLM 覆盖 .env 中显式指定的模型。
-    _ds_model = os.environ.get("DEEPSEEK_MODEL", "")
-    if _ds_model:
-        os.environ["BEN_LLM"] = _ds_model
-    _ds_key = os.environ.get("DEEPSEEK_API_KEY", "")
-    if _ds_key:
-        os.environ["LLM_API_KEY"] = _ds_key
-    _ds_base = os.environ.get("DEEPSEEK_BASE_URL", "")
-    if _ds_base:
-        os.environ["OPENAI_BASE_URL"] = _ds_base
+    _env_file_vals = _dotenv_values(_dotenv_path)
+
+    def _sync_aliases(aliases: list[str]) -> None:
+        value = next((_env_file_vals[a] for a in aliases if _env_file_vals.get(a)), None)
+        if value:
+            for alias in aliases:
+                os.environ[alias] = value
+
+    _sync_aliases(["LLM_MODEL", "BEN_LLM", "DEEPSEEK_MODEL"])
+    _sync_aliases(["LLM_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY"])
+    _sync_aliases(["LLM_API_BASE", "OPENAI_BASE_URL", "DEEPSEEK_BASE_URL"])
 
 from Ben.config import load_settings  # noqa: E402
 from Ben.interface.cli_args import parse_args  # noqa: E402
@@ -86,15 +103,17 @@ def _selftest_docker() -> int:
 
 def _selftest_llm() -> int:
     """模型文本连通验证：用 openai-agents SDK 发一条最小请求并打印回复。"""
-    settings = load_settings()
+    settings = load_settings(require_api_key=True)
     print(f"[1/2] 配置 SDK（model={settings.llm.model} @ {settings.llm.base_url}）...")
 
     from Ben.config import configure_sdk_model_defaults
     configure_sdk_model_defaults(settings)
 
     # 用 SDK 的 Runner 做最小连通测试（不使用 sandbox）
+    # model_provider 挂 BenProvider，与正式运行同一路由（支持 厂商/模型 前缀）
     from agents import RunConfig, Runner
     from agents.agent import Agent
+    from Ben.config.models import BenProvider
 
     test_agent = Agent(
         name="connectivity-test",
@@ -104,6 +123,7 @@ def _selftest_llm() -> int:
     )
     run_config = RunConfig(
         model=settings.llm.model,
+        model_provider=BenProvider(),
         trace_include_sensitive_data=False,
     )
 
@@ -195,20 +215,92 @@ def _selftest_tools() -> int:
         return 1
 
 
-def _run_task(target: str, *, keep_container: bool) -> int:
-    """完整 Agent 任务（SDK Runner + SDK Sandbox 驱动）。"""
-    settings = load_settings()
-    if not target:
-        target = settings.allowed_targets[0]
-        print(f"未指定目标，使用白名单首项：{target}")
+def _run_task(args) -> int:
+    """完整 Agent 任务（SDK Runner + SDK Sandbox 驱动）。
+
+    流程（对齐 strix prepare_run 的 Ben 子集）：
+      args.targets_info（parse 阶段已分类/校验；resume 时已从 run.json 恢复）
+      → repository 目标 clone 到本地临时目录（resume 跳过，复用既有克隆）
+      → collect_local_sources（沙箱 bind mount 清单）
+      → resolve_diff_scope_context（--scope-mode/--diff-base）
+      → diff instruction_block 前置拼入 instruction
+      → 构造 AgentRunner 并运行
+    """
+    settings = load_settings(require_api_key=True)
+    resume_run_name = getattr(args, "resume", None) or None
+    interactive = bool(getattr(args, "interactive", False))
+    targets_info = list(getattr(args, "targets_info", None) or [])
+    instruction = getattr(args, "instruction", None)
+    local_sources: list[dict] = []
+    diff_scope: dict | None = None
+
+    if resume_run_name is not None:
+        # resume：targets_info/scan_mode/instruction/diff_scope/local_sources
+        # 已在 parse 阶段由 load_resume_state 从该 run 的 run.json 恢复并校验
+        # （含克隆仓库/本地目录仍在、agents.json 已到首个快照）。
+        local_sources = list(getattr(args, "local_sources", None) or [])
+        diff_scope = getattr(args, "diff_scope", None)
+    elif not targets_info:
+        print("未指定目标，使用白名单首项（runner 内回退）")
+    else:
+        from Ben.interface.targets import (
+            clone_repository,
+            collect_local_sources,
+            resolve_diff_scope_context,
+        )
+
+        # repository 目标先 clone 到本地（对齐 strix prepare_run）。
+        run_name = f"ben_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        for target_info in targets_info:
+            if target_info.get("type") != "repository":
+                continue
+            details = target_info["details"]
+            try:
+                details["cloned_repo_path"] = clone_repository(
+                    details["target_repo"], run_name, details.get("workspace_subdir")
+                )
+            except (ValueError, FileNotFoundError) as exc:
+                print(f"[FAIL] 克隆仓库失败：{exc}")
+                return 1
+
+        local_sources = collect_local_sources(targets_info)
+
+        # diff-scope 解析（Ben 始终非交互：auto 在 CI/PR 环境自动启用）。
+        try:
+            diff = resolve_diff_scope_context(
+                local_sources=local_sources,
+                scope_mode=getattr(args, "scope_mode", "auto"),
+                diff_base=getattr(args, "diff_base", None),
+                non_interactive=True,
+            )
+        except ValueError as exc:
+            print(f"[FAIL] diff-scope 解析失败：{exc}")
+            return 1
+        diff_scope = diff.metadata
+        # 对齐 strix prepare_run L266-271：diff 说明块前置拼入 instruction。
+        if diff.instruction_block:
+            if instruction:
+                instruction = f"{diff.instruction_block}\n\n{instruction}"
+            else:
+                instruction = diff.instruction_block
 
     # SDK Runner 驱动的 Agent 运行器
     # 不再需要手传 DockerExecutor——runner 内部通过 SDK DockerSandboxClient 管理容器
     from Ben.core.runner import AgentRunner
-    runner = AgentRunner(settings=settings)
+    runner = AgentRunner(
+        settings=settings,
+        local_sources=local_sources or None,
+        targets_info=targets_info or None,
+        scan_mode=getattr(args, "scan_mode", "deep"),
+        user_instructions=instruction,
+        diff_scope=diff_scope,
+        interactive=interactive,
+        resume_run_name=resume_run_name,
+        resume_instruction=getattr(args, "user_explicit_instruction", None),
+    )
 
     try:
-        result = runner.run(target)
+        result = runner.run(None)
     finally:
         # SDK sandbox session 在 runner 内部已关闭
         pass
@@ -232,7 +324,7 @@ def main() -> int:
         return _selftest_llm()
     if args.selftest_tools:
         return _selftest_tools()
-    return _run_task(args.target, keep_container=args.keep_container)
+    return _run_task(args)
 
 
 if __name__ == "__main__":
