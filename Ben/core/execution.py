@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import inspect
 import logging
+import os
 import re
 import time
 import uuid
@@ -446,6 +447,26 @@ async def spawn_child_agent(
     parent_id = parent_ctx.get("agent_id")
     if not isinstance(parent_id, str):
         raise TypeError("Parent agent_id missing from context")
+
+    # Ben 可选硬闸门：BEN_MAX_SUBAGENTS=N 限制整次扫描创建的子 agent 总数
+    # （含子 agent 再派生的孙 agent；根 agent 不计）。达到上限时拒绝派生，
+    # create_agent 工具会把错误回给模型，由模型自行收敛。
+    _max_subagents = os.environ.get("BEN_MAX_SUBAGENTS", "").strip()
+    if _max_subagents:
+        try:
+            _limit = int(_max_subagents)
+        except ValueError:
+            raise RuntimeError(
+                f"BEN_MAX_SUBAGENTS must be an integer, got {_max_subagents!r}"
+            ) from None
+        _current = sum(
+            1 for _parent in coordinator.parent_of.values() if _parent is not None
+        )
+        if _current >= _limit:
+            raise RuntimeError(
+                f"BEN_MAX_SUBAGENTS={_limit} reached; refusing to spawn '{name}' "
+                f"({_current} sub-agent(s) already created). Finish with what you have."
+            )
 
     child_id = uuid.uuid4().hex[:8]
     child_agent = factory(name=name, skills=skills)
