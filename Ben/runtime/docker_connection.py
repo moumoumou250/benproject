@@ -17,9 +17,9 @@ agent needs for a *stable* connection:
 
 All knobs are env-tunable:
 
-- ``STRIX_DOCKER_TIMEOUT``        per-call API timeout seconds (default 60)
-- ``STRIX_DOCKER_CONNECT_RETRIES`` connect+ping attempts (default 4)
-- ``STRIX_DOCKER_RETRY_DELAY``    initial backoff seconds (default 1.0, x2 per retry)
+- ``BEN_DOCKER_TIMEOUT``        per-call API timeout seconds (default 60)
+- ``BEN_DOCKER_CONNECT_RETRIES`` connect+ping attempts (default 4)
+- ``BEN_DOCKER_RETRY_DELAY``    initial backoff seconds (default 1.0, x2 per retry)
 """
 
 from __future__ import annotations
@@ -153,9 +153,9 @@ def connect_docker(
     ~7s worst-case before giving up (1+2+4s of backoff between tries).
     """
     endpoint = resolve_docker_endpoint()
-    timeout = timeout if timeout is not None else _env_int("STRIX_DOCKER_TIMEOUT", 60)
-    attempts = retries if retries is not None else _env_int("STRIX_DOCKER_CONNECT_RETRIES", 4)
-    delay = retry_delay if retry_delay is not None else _env_float("STRIX_DOCKER_RETRY_DELAY", 1.0)
+    timeout = timeout if timeout is not None else _env_int("BEN_DOCKER_TIMEOUT", 60)
+    attempts = retries if retries is not None else _env_int("BEN_DOCKER_CONNECT_RETRIES", 4)
+    delay = retry_delay if retry_delay is not None else _env_float("BEN_DOCKER_RETRY_DELAY", 1.0)
     attempts = max(1, attempts)
 
     last_exc: BaseException | None = None
@@ -200,7 +200,7 @@ def wait_for_docker(deadline_seconds: float = 30.0, poll_interval: float = 1.0) 
     last_exc: BaseException | None = None
     while True:
         try:
-            client = _build_client(endpoint, timeout=_env_int("STRIX_DOCKER_TIMEOUT", 60))
+            client = _build_client(endpoint, timeout=_env_int("BEN_DOCKER_TIMEOUT", 60))
             client.ping()
             return client
         except _RETRYABLE as exc:
@@ -221,7 +221,7 @@ def docker_healthcheck(client: Any | None = None) -> dict[str, Any]:
     own_client = client is None
     try:
         if own_client:
-            client = _build_client(endpoint, timeout=_env_int("STRIX_DOCKER_TIMEOUT", 60))
+            client = _build_client(endpoint, timeout=_env_int("BEN_DOCKER_TIMEOUT", 60))
         version = client.version()
         info = client.info()
         return {

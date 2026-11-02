@@ -1,0 +1,224 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-11-01 13:38:37 UTC",
+  "run_id": "ben_20261101_213424_bad907d0",
+  "run_name": "ben_20261101_213424_bad907d0",
+  "scope": {
+    "targets": [
+      {
+        "type": "web_application",
+        "details": {
+          "target_url": "http://117.72.199.2:3000/"
+        }
+      }
+    ],
+    "scan_mode": "blackbox",
+    "scope_mode": "auto",
+    "diff_scope": {
+      "active": false
+    },
+    "instruction": "授权范围：http://117.72.199.2:3000。请按预设流程，先理解目标，再选择合适的工具取证，最后输出有真实证据支持的测试报告。"
+  },
+  "summary": {
+    "surfaces_reviewed": 14,
+    "outcomes": {
+      "reported": 5,
+      "no_issue_found": 3,
+      "ruled_out": 4,
+      "not_applicable": 1,
+      "needs_follow_up": 1
+    },
+    "findings_filed": 0,
+    "gaps": 1
+  },
+  "machine_observed": {
+    "agents": [],
+    "skills_exercised": [],
+    "findings_filed": 0,
+    "source": "runtime"
+  },
+  "completeness": {
+    "complete": true,
+    "scan_status": "completed",
+    "exit_reason": null,
+    "caveats": []
+  },
+  "entries": [
+    {
+      "surface": "GET /rest/memories",
+      "risk_area": "未授权读取他人用户对象（IDOR / 数据泄露）",
+      "outcome": "reported",
+      "outcome_label": "Finding reported",
+      "evidence": "匿名 GET 返回 200/6183，data[].User 含 email、32位MD5口令哈希、deluxeToken、role；稳定复现两次，携带伪造 Bearer 头仍 200，排除缓存。已写入 findings 笔记。",
+      "recorded_by": "越权与数据泄露",
+      "recorded_at": "2026-11-01 13:36:11 UTC",
+      "updated_at": "",
+      "previous_outcomes": [],
+      "source": "agent_reported"
+    },
+    {
+      "surface": "GET /rest/products/{id}/reviews",
+      "risk_area": "未授权读取他人身份信息（评论作者 email）",
+      "outcome": "reported",
+      "outcome_label": "Finding reported",
+      "evidence": "匿名 GET /rest/products/1|2|3/reviews 均 200，author 字段为明文 email：admin@juice-sh.op、basil@juice-sh.op、uvogin@juice-sh.op；/4 /5 返回空数组属无数据而非控制点。",
+      "recorded_by": "越权与数据泄露",
+      "recorded_at": "2026-11-01 13:36:11 UTC",
+      "updated_at": "",
+      "previous_outcomes": [],
+      "source": "agent_reported"
+    },
+    {
+      "surface": "GET /rest/user/security-question",
+      "risk_area": "未授权账号枚举 / 口令找回问题泄露",
+      "outcome": "reported",
+      "outcome_label": "Finding reported",
+      "evidence": "存在账号返回 question 对象（admin@ 200/134、bender@ 200/153、jim@ 200/146），不存在账号返回 {}（200/2），差分稳定，构成账号存在性判定预言机。",
+      "recorded_by": "越权与数据泄露",
+      "recorded_at": "2026-11-01 13:36:11 UTC",
+      "updated_at": "",
+      "previous_outcomes": [],
+      "source": "agent_reported"
+    },
+    {
+      "surface": "GET /rest/basket/{1,2}",
+      "risk_area": "IDOR / BOLA —— 匿名读取他人购物车",
+      "outcome": "ruled_out",
+      "outcome_label": "Ruled out",
+      "evidence": "匿名 GET /rest/basket/1 与 /rest/basket/2 均返回 401 UnauthorizedError: No Authorization header was found（Content-Length 972）；大小写变体 /REST/BASKET/1、/rest/Basket/1 与尾斜杠 /rest/basket/1/ 同为 401/972，说明 express-jwt 校验挂在与路由大小写/斜杠无关的应用级中间件链上，覆盖所有可达路径。仅证明认证闸门存在，认证后 BOLA 未测。",
+      "recorded_by": "越权与数据泄露",
+      "recorded_at": "2026-11-01 13:36:21 UTC",
+      "updated_at": "",
+      "previous_outcomes": [],
+      "source": "agent_reported"
+    },
+    {
+      "surface": "GET /api/Users/{id} 与 /api/Users",
+      "risk_area": "未授权用户对象读取（/api/Users 纵向越权）",
+      "outcome": "ruled_out",
+      "outcome_label": "Ruled out",
+      "evidence": "匿名 /api/Users/1、/api/Users 均 401/972（No Authorization header）；/api/users/1、/API/Users/1、/api/Users/1/ 同为 401/972。控制点为应用级 express-jwt 中间件，在进入 handler 前统一拒绝，覆盖大小写与尾斜杠变体。带伪造 Bearer 头返回 401「Invalid token: no header in signature」同样在中间件层。",
+      "recorded_by": "越权与数据泄露",
+      "recorded_at": "2026-11-01 13:36:21 UTC",
+      "updated_at": "",
+      "previous_outcomes": [],
+      "source": "agent_reported"
+    },
+    {
+      "surface": "GET /rest/basket/{id}（持合法 JWT 时）",
+      "risk_area": "认证后 BOLA —— 同一 token 读 basket/1 与 basket/2 的对象级授权绑定",
+      "outcome": "needs_follow_up",
+      "outcome_label": "Requires further review",
+      "evidence": "GET /rest/basket/1 与 /rest/basket/2 在持有合法 JWT 情况下是否绑定调用者，未做验证：当前纪律仅允许 GET/HEAD，无法注册第二个账号（POST /api/Users），也没有任何合法会话。缺口=缺少两个身份的有效 token，无法构造 owner vs non-owner 差分。已在 findings 中标注为未验证，不得计为安全。",
+      "recorded_by": "越权与数据泄露",
+      "recorded_at": "2026-11-01 13:36:21 UTC",
+      "updated_at": "",
+      "previous_outcomes": [],
+      "source": "agent_reported"
+    },
+    {
+      "surface": "GET /api/BasketItems、/rest/user/authentication-details/{id}、/api/SecurityAnswers、/api/Complaints、/api/Cards、/api/Addresss、/api/Feedbacks/{id}",
+      "risk_area": "未授权读取他人购物车条目 / 认证详情 / 密保答案 / 投诉正文 / 支付卡 / 地址",
+      "outcome": "ruled_out",
+      "outcome_label": "Ruled out",
+      "evidence": "匿名 /api/BasketItems 与 /api/BasketItems/1 均 401/972（No Authorization header），被 express-jwt 中间件在 handler 前拦截；/rest/user/authentication-details/1、/2 及无 id 版本同样 401/972，/api/SecurityAnswers、/api/Complaints、/api/Complaints/1、/api/Feedbacks/1 全部 401/972。/api/Cards、/api/Addresss 返回 401 但体为 JSON {\"status\":\"error\",\"message\":\"Cannot read properties of undefined (reading 'data')\"}（83 字节）——仍是拒绝，非数据泄露。",
+      "recorded_by": "越权与数据泄露",
+      "recorded_at": "2026-11-01 13:36:21 UTC",
+      "updated_at": "",
+      "previous_outcomes": [],
+      "source": "agent_reported"
+    },
+    {
+      "surface": "GET /api/Feedbacks",
+      "risk_area": "未授权读取全站反馈 / 评论者身份",
+      "outcome": "no_issue_found",
+      "outcome_label": "No issue identified",
+      "evidence": "匿名 GET /api/Feedbacks 返回 200/3033，18 条反馈含 UserId、comment、rating、时间戳；但评论内嵌 email 已被服务端掩码（\"***in@juice-sh.op\"、\"***ereum@juice-sh.op\"），无一条明文邮箱。属设计公开的公开留言板 + 内建掩码控制，未见越权或明文 PII。注：id=9 存在他人测试遗留内容 \"PWNED-by-A-via-BOLA\"，仅作环境状态记录。",
+      "recorded_by": "越权与数据泄露",
+      "recorded_at": "2026-11-01 13:36:21 UTC",
+      "updated_at": "",
+      "previous_outcomes": [],
+      "source": "agent_reported"
+    },
+    {
+      "surface": "GET /api/Jobs（/#/jobs 对应接口）",
+      "risk_area": "招聘/岗位接口未授权数据读取",
+      "outcome": "not_applicable",
+      "outcome_label": "Not applicable",
+      "evidence": "Juice Shop 无 /api/Jobs 路由：GET /api/Jobs 返回 500 `Error: Unexpected path: /api/Jobs`（2418 字节）；同类 /api/Memories、/rest/memories/1、/rest/products/reviews 亦为 500 Unexpected path。/#/jobs 仅为静态 SPA 视图，无对应数据接口可测。",
+      "recorded_by": "越权与数据泄露",
+      "recorded_at": "2026-11-01 13:36:21 UTC",
+      "updated_at": "",
+      "previous_outcomes": [],
+      "source": "agent_reported"
+    },
+    {
+      "surface": "GET /rest/admin/application-configuration",
+      "risk_area": "配置文件未授权读取（含密钥/凭据）",
+      "outcome": "no_issue_found",
+      "outcome_label": "No issue identified",
+      "evidence": "GET /rest/admin/application-configuration 匿名 200/23577，返回应用配置 JSON（server.baseUrl=http://localhost:3000、application.domain=juice-sh.op、googleOauth.clientId=1005568560502-6hm16lef8oh46hr2d98vf2ohlnj4nfhq.apps.googleusercontent.com 等）。逐一检索 apiKey/secret/clientSecret/token/password/smtp 关键字未见凭据值；OAuth clientId 本身为公开标识，config 中不含用户个人数据。按分级仅记「观察」，不构成数据泄露类漏洞。",
+      "recorded_by": "越权与数据泄露",
+      "recorded_at": "2026-11-01 13:36:21 UTC",
+      "updated_at": "",
+      "previous_outcomes": [],
+      "source": "agent_reported"
+    },
+    {
+      "surface": "/ftp/ 目录及其中文件",
+      "risk_area": "目录列举与未授权敏感文件下载",
+      "outcome": "reported",
+      "outcome_label": "Finding reported",
+      "evidence": "GET /ftp/ 返回 200 + 目录清单（14 项）；/ftp/acquisitions.md 200/909 text/markdown 正文含 \"This document is confidential! Do not distribute!\"；/ftp/incident-support.kdbx 200/3246 application/octet-stream 可下载；/ftp/announcement_encrypted.md 200/369237；/ftp/legal.md 200/3047；/ftp/order_aafc-129edb243ac04f9d.pdf 200/1826；/ftp/quarantine/ 亦为目录列举。扩展名白名单控制存在：coupons_2013.md.bak / package.json.bak / eastere.gg / encrypt.pyc / suspicious_errors.yml / package-lock.json.bak 均 403 \"Only .md and .pdf files are allowed!\"。",
+      "recorded_by": "静态产物与文件暴露",
+      "recorded_at": "2026-11-01 13:36:49 UTC",
+      "updated_at": "",
+      "previous_outcomes": [],
+      "source": "agent_reported"
+    },
+    {
+      "surface": "/support/logs/ 访问日志与审计文件",
+      "risk_area": "日志文件未授权暴露 / 敏感信息泄露",
+      "outcome": "reported",
+      "outcome_label": "Finding reported",
+      "evidence": "GET /support/logs/ 返回目录列举；/support/logs/access.log.2026-11-01 200/35665、access.log.2026-10-31 200/28974、audit.json 200/521 均可直接匿名下载。日志含全量客户端 IP、请求路径、UA，且其中一条 GET /rest/user/whoami?token=eyJ... 把完整 RS256 JWT（payload 内含 admin 用户 id/email/password 哈希/role=admin）写入日志，任何匿名访问者可读取该 token。",
+      "recorded_by": "静态产物与文件暴露",
+      "recorded_at": "2026-11-01 13:36:49 UTC",
+      "updated_at": "",
+      "previous_outcomes": [],
+      "source": "agent_reported"
+    },
+    {
+      "surface": "/main.js 前端产物",
+      "risk_area": "硬编码密钥/凭证泄露",
+      "outcome": "no_issue_found",
+      "outcome_label": "No issue identified",
+      "evidence": "下载 1207722 字节 bundle 后 grep -nE '(apiKey|api_key|secret|privateKey|BEGIN RSA|AKIA|client_secret|password=...)'：命中项全部是代码标识符与模板占位（line1 keysService.submitKey({privateKey:t}) 为表单字段、line1520 FontAwesome iconName:user-secret、line6472 totpSecret 来自服务端 /rest/2fa/status 响应、line6548 为 Angular 模板属性名），无任何真实密钥值、无 AKIA/BEGIN RSA 命中、无硬编码口令。",
+      "recorded_by": "静态产物与文件暴露",
+      "recorded_at": "2026-11-01 13:36:49 UTC",
+      "updated_at": "",
+      "previous_outcomes": [],
+      "source": "agent_reported"
+    },
+    {
+      "surface": "/main.js.map、/sitemap.xml、/swagger.json、/api-docs/swagger.json",
+      "risk_area": "source map 源码泄露 / 软 404 误判",
+      "outcome": "ruled_out",
+      "outcome_label": "Ruled out",
+      "evidence": "GET /main.js.map 返回 200 但 content-type text/html、9393 字节，md5(9d114a09b418b38893d8843cb7c0026d) 与 GET /nonexistent-xyz123 返回的 SPA 首页完全一致，证明是 SPA fallback 软 404，映射文件不存在。同理 /sitemap.xml、/swagger.json 均为同一份 9393 字节 index.html。真实 Swagger UI 在 /api-docs/（200/3106 字节 Swagger UI 页面），由此可判定不存在可用于源码还原的 source map。",
+      "recorded_by": "静态产物与文件暴露",
+      "recorded_at": "2026-11-01 13:36:49 UTC",
+      "updated_at": "",
+      "previous_outcomes": [],
+      "source": "agent_reported"
+    }
+  ],
+  "gaps": [
+    {
+      "kind": "needs_follow_up",
+      "surface": "GET /rest/basket/{id}（持合法 JWT 时）",
+      "risk_area": "认证后 BOLA —— 同一 token 读 basket/1 与 basket/2 的对象级授权绑定",
+      "detail": "GET /rest/basket/1 与 /rest/basket/2 在持有合法 JWT 情况下是否绑定调用者，未做验证：当前纪律仅允许 GET/HEAD，无法注册第二个账号（POST /api/Users），也没有任何合法会话。缺口=缺少两个身份的有效 token，无法构造 owner vs non-owner 差分。已在 findings 中标注为未验证，不得计为安全。"
+    }
+  ]
+}

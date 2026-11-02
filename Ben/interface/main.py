@@ -30,10 +30,11 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from pathlib import Path
 
-# Windows asyncio 兼容（对齐 strix 的 interface/main.py）
+# Windows asyncio 兼容
 if sys.platform == "win32":
     import asyncio
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
@@ -42,6 +43,27 @@ if sys.platform == "win32":
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+# ── .env 优先级修复 ──────────────────────────────────────────────
+# 外部进程可能注入 BEN_LLM 等环境变量，其优先级高于 .env 文件，
+# 导致 .env 中的 DEEPSEEK_MODEL 被覆盖。
+# 在此先从 .env 加载，用 .env 中的值回写环境变量，保证 .env 配置生效。
+from dotenv import load_dotenv as _load_dotenv  # noqa: E402
+
+_dotenv_path = PROJECT_ROOT / ".env"
+if _dotenv_path.exists():
+    _load_dotenv(_dotenv_path, override=False)  # 不覆盖已有的 env var
+    # .env 中的 DEEPSEEK_* 若存在，同步到 BEN_LLM/LLM_* 等别名，
+    # 防止外部注入的 BEN_LLM 覆盖 .env 中显式指定的模型。
+    _ds_model = os.environ.get("DEEPSEEK_MODEL", "")
+    if _ds_model:
+        os.environ["BEN_LLM"] = _ds_model
+    _ds_key = os.environ.get("DEEPSEEK_API_KEY", "")
+    if _ds_key:
+        os.environ["LLM_API_KEY"] = _ds_key
+    _ds_base = os.environ.get("DEEPSEEK_BASE_URL", "")
+    if _ds_base:
+        os.environ["OPENAI_BASE_URL"] = _ds_base
 
 from Ben.config import load_settings  # noqa: E402
 from Ben.interface.cli_args import parse_args  # noqa: E402

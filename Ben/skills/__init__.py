@@ -221,6 +221,11 @@ def skill_catalog() -> dict[str, list[dict[str, str]]]:
     return catalog
 
 
+def get_available_skills() -> dict[str, list[dict[str, str]]]:
+    """strix 兼容别名（report/coverage 等 strix 移植代码使用）：等价 :func:`skill_catalog`。"""
+    return skill_catalog()
+
+
 def resolve_skill_name(name: str) -> str:
     """把裸名/限定名解析为限定名；未命中或歧义时抛明确异常。"""
     key = (name or "").strip()
@@ -310,6 +315,35 @@ def _render_skill(skill: Skill, context: Mapping[str, Any]) -> str:
         ) from exc
 
 
+def _candidate_qualified_names(name: str) -> set[str]:
+    """把技能名解析为候选限定名集合（对齐 strix 的 _candidate_skill_files）。
+
+    限定名 ``category/name`` 精确命中；裸名跨分类匹配所有同名技能。
+    未注册的名字解析为空集合。
+    """
+    skills = _discover()
+    if "/" in name:
+        return {name} if name in skills else set()
+    return {qname for qname, skill in skills.items() if skill.name == name}
+
+
+def skill_turn_limit(skill_names: list[str], turn_limits: Mapping[str, int]) -> int | None:
+    """``turn_limits``（按技能名索引）中命中这些技能的最大值，无命中返回 None。
+
+    对齐 strix 的 skill_turn_limit：子 agent 挂载了带轮数上限的技能时，
+    用其上限收紧执行循环。
+    """
+    files = {q for name in skill_names for q in _candidate_qualified_names(name)}
+    return max(
+        (
+            limit
+            for name, limit in turn_limits.items()
+            if files.intersection(_candidate_qualified_names(name))
+        ),
+        default=None,
+    )
+
+
 __all__ = [
     "DEFAULT_SKILL_DIR",
     "Skill",
@@ -317,11 +351,13 @@ __all__ = [
     "SkillError",
     "SkillNotFoundError",
     "SkillRenderError",
+    "get_available_skills",
     "get_skill",
     "list_skills",
     "register_skill_dir",
     "resolve_skill_name",
     "skill_catalog",
     "skill_search_dirs",
+    "skill_turn_limit",
     "validate_requested_skills",
 ]

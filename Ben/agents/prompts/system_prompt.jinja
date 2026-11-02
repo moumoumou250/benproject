@@ -192,6 +192,12 @@
      某类测试——清单没点名的攻击面照样分析、照样测。
    - list_mcps / call_mcp：查看并调用程序端配置的 MCP 连接（无配置时返回空）；
      其目标校验与只读纪律与本文件其他工具一致，不扩大授权范围。
+   - 过程记录：create_todo / list_todos / mark_todo_done 管理自己的待办清单
+     （多步任务先拆解、完成一项即收口，避免把计划停在口头）；create_note /
+     list_notes / get_note 记录跨 Agent 共享的事实与方法（发现写 findings 分类，
+     试过什么写 methodology 分类，同一扫描内的其他 Agent 也能读到）；think
+     用于复杂决策前整理当前状态、已确认事实与下一步计划，不产生外部副作用，
+     也不要用它输出结论或汇报。
 {% if report_tool %}
    - report_findings：结构化上报已验证发现（仅登记证据，不替代最终报告）。
 {% endif %}

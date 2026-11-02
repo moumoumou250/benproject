@@ -1,0 +1,661 @@
+{
+  "version": "2.1.0",
+  "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "Ben",
+          "informationUri": "https://strix.ai",
+          "rules": [
+            {
+              "id": "strix-coverage/idor-bola-匿名读取他人购物车",
+              "name": "IDOR / BOLA —— 匿名读取他人购物车",
+              "shortDescription": {
+                "text": "Coverage: IDOR / BOLA —— 匿名读取他人购物车"
+              },
+              "fullDescription": {
+                "text": "Coverage of IDOR / BOLA —— 匿名读取他人购物车 across the assessed attack surface."
+              },
+              "defaultConfiguration": {
+                "level": "none"
+              },
+              "help": {
+                "text": "Coverage of IDOR / BOLA —— 匿名读取他人购物车 across the assessed attack surface.",
+                "markdown": "Coverage of IDOR / BOLA —— 匿名读取他人购物车 across the assessed attack surface."
+              },
+              "properties": {
+                "tags": [
+                  "coverage"
+                ]
+              }
+            },
+            {
+              "id": "strix-coverage/未授权用户对象读取-api-users-纵向越权",
+              "name": "未授权用户对象读取（/api/Users 纵向越权）",
+              "shortDescription": {
+                "text": "Coverage: 未授权用户对象读取（/api/Users 纵向越权）"
+              },
+              "fullDescription": {
+                "text": "Coverage of 未授权用户对象读取（/api/Users 纵向越权） across the assessed attack surface."
+              },
+              "defaultConfiguration": {
+                "level": "none"
+              },
+              "help": {
+                "text": "Coverage of 未授权用户对象读取（/api/Users 纵向越权） across the assessed attack surface.",
+                "markdown": "Coverage of 未授权用户对象读取（/api/Users 纵向越权） across the assessed attack surface."
+              },
+              "properties": {
+                "tags": [
+                  "coverage"
+                ]
+              }
+            },
+            {
+              "id": "strix-coverage/认证后-bola-同一-token-读-basket-1-与-basket-2-的对象级授权绑定",
+              "name": "认证后 BOLA —— 同一 token 读 basket/1 与 basket/2 的对象级授权绑定",
+              "shortDescription": {
+                "text": "Coverage: 认证后 BOLA —— 同一 token 读 basket/1 与 basket/2 的对象级授权绑定"
+              },
+              "fullDescription": {
+                "text": "Coverage of 认证后 BOLA —— 同一 token 读 basket/1 与 basket/2 的对象级授权绑定 across the assessed attack surface."
+              },
+              "defaultConfiguration": {
+                "level": "none"
+              },
+              "help": {
+                "text": "Coverage of 认证后 BOLA —— 同一 token 读 basket/1 与 basket/2 的对象级授权绑定 across the assessed attack surface.",
+                "markdown": "Coverage of 认证后 BOLA —— 同一 token 读 basket/1 与 basket/2 的对象级授权绑定 across the assessed attack surface."
+              },
+              "properties": {
+                "tags": [
+                  "coverage"
+                ]
+              }
+            },
+            {
+              "id": "strix-coverage/未授权读取他人购物车条目-认证详情-密保答案-投诉正文-支付卡-地址",
+              "name": "未授权读取他人购物车条目 / 认证详情 / 密保答案 / 投诉正文 / 支付卡 / 地址",
+              "shortDescription": {
+                "text": "Coverage: 未授权读取他人购物车条目 / 认证详情 / 密保答案 / 投诉正文 / 支付卡 / 地址"
+              },
+              "fullDescription": {
+                "text": "Coverage of 未授权读取他人购物车条目 / 认证详情 / 密保答案 / 投诉正文 / 支付卡 / 地址 across the assessed attack surface."
+              },
+              "defaultConfiguration": {
+                "level": "none"
+              },
+              "help": {
+                "text": "Coverage of 未授权读取他人购物车条目 / 认证详情 / 密保答案 / 投诉正文 / 支付卡 / 地址 across the assessed attack surface.",
+                "markdown": "Coverage of 未授权读取他人购物车条目 / 认证详情 / 密保答案 / 投诉正文 / 支付卡 / 地址 across the assessed attack surface."
+              },
+              "properties": {
+                "tags": [
+                  "coverage"
+                ]
+              }
+            },
+            {
+              "id": "strix-coverage/未授权读取全站反馈-评论者身份",
+              "name": "未授权读取全站反馈 / 评论者身份",
+              "shortDescription": {
+                "text": "Coverage: 未授权读取全站反馈 / 评论者身份"
+              },
+              "fullDescription": {
+                "text": "Coverage of 未授权读取全站反馈 / 评论者身份 across the assessed attack surface."
+              },
+              "defaultConfiguration": {
+                "level": "none"
+              },
+              "help": {
+                "text": "Coverage of 未授权读取全站反馈 / 评论者身份 across the assessed attack surface.",
+                "markdown": "Coverage of 未授权读取全站反馈 / 评论者身份 across the assessed attack surface."
+              },
+              "properties": {
+                "tags": [
+                  "coverage"
+                ]
+              }
+            },
+            {
+              "id": "strix-coverage/招聘-岗位接口未授权数据读取",
+              "name": "招聘/岗位接口未授权数据读取",
+              "shortDescription": {
+                "text": "Coverage: 招聘/岗位接口未授权数据读取"
+              },
+              "fullDescription": {
+                "text": "Coverage of 招聘/岗位接口未授权数据读取 across the assessed attack surface."
+              },
+              "defaultConfiguration": {
+                "level": "none"
+              },
+              "help": {
+                "text": "Coverage of 招聘/岗位接口未授权数据读取 across the assessed attack surface.",
+                "markdown": "Coverage of 招聘/岗位接口未授权数据读取 across the assessed attack surface."
+              },
+              "properties": {
+                "tags": [
+                  "coverage"
+                ]
+              }
+            },
+            {
+              "id": "strix-coverage/配置文件未授权读取-含密钥-凭据",
+              "name": "配置文件未授权读取（含密钥/凭据）",
+              "shortDescription": {
+                "text": "Coverage: 配置文件未授权读取（含密钥/凭据）"
+              },
+              "fullDescription": {
+                "text": "Coverage of 配置文件未授权读取（含密钥/凭据） across the assessed attack surface."
+              },
+              "defaultConfiguration": {
+                "level": "none"
+              },
+              "help": {
+                "text": "Coverage of 配置文件未授权读取（含密钥/凭据） across the assessed attack surface.",
+                "markdown": "Coverage of 配置文件未授权读取（含密钥/凭据） across the assessed attack surface."
+              },
+              "properties": {
+                "tags": [
+                  "coverage"
+                ]
+              }
+            },
+            {
+              "id": "strix-coverage/硬编码密钥-凭证泄露",
+              "name": "硬编码密钥/凭证泄露",
+              "shortDescription": {
+                "text": "Coverage: 硬编码密钥/凭证泄露"
+              },
+              "fullDescription": {
+                "text": "Coverage of 硬编码密钥/凭证泄露 across the assessed attack surface."
+              },
+              "defaultConfiguration": {
+                "level": "none"
+              },
+              "help": {
+                "text": "Coverage of 硬编码密钥/凭证泄露 across the assessed attack surface.",
+                "markdown": "Coverage of 硬编码密钥/凭证泄露 across the assessed attack surface."
+              },
+              "properties": {
+                "tags": [
+                  "coverage"
+                ]
+              }
+            },
+            {
+              "id": "strix-coverage/source-map-源码泄露-软-404-误判",
+              "name": "source map 源码泄露 / 软 404 误判",
+              "shortDescription": {
+                "text": "Coverage: source map 源码泄露 / 软 404 误判"
+              },
+              "fullDescription": {
+                "text": "Coverage of source map 源码泄露 / 软 404 误判 across the assessed attack surface."
+              },
+              "defaultConfiguration": {
+                "level": "none"
+              },
+              "help": {
+                "text": "Coverage of source map 源码泄露 / 软 404 误判 across the assessed attack surface.",
+                "markdown": "Coverage of source map 源码泄露 / 软 404 误判 across the assessed attack surface."
+              },
+              "properties": {
+                "tags": [
+                  "coverage"
+                ]
+              }
+            },
+            {
+              "id": "strix-coverage/password-reset-logic-user-enumeration-sqli",
+              "name": "Password reset logic / user enumeration / SQLi",
+              "shortDescription": {
+                "text": "Coverage: Password reset logic / user enumeration / SQLi"
+              },
+              "fullDescription": {
+                "text": "Coverage of Password reset logic / user enumeration / SQLi across the assessed attack surface."
+              },
+              "defaultConfiguration": {
+                "level": "none"
+              },
+              "help": {
+                "text": "Coverage of Password reset logic / user enumeration / SQLi across the assessed attack surface.",
+                "markdown": "Coverage of Password reset logic / user enumeration / SQLi across the assessed attack surface."
+              },
+              "properties": {
+                "tags": [
+                  "coverage"
+                ]
+              }
+            },
+            {
+              "id": "strix-coverage/information-disclosure",
+              "name": "Information disclosure",
+              "shortDescription": {
+                "text": "Coverage: Information disclosure"
+              },
+              "fullDescription": {
+                "text": "Coverage of Information disclosure across the assessed attack surface."
+              },
+              "defaultConfiguration": {
+                "level": "none"
+              },
+              "help": {
+                "text": "Coverage of Information disclosure across the assessed attack surface.",
+                "markdown": "Coverage of Information disclosure across the assessed attack surface."
+              },
+              "properties": {
+                "tags": [
+                  "coverage"
+                ]
+              }
+            },
+            {
+              "id": "strix-coverage/基线侦察-安全响应头",
+              "name": "基线侦察 / 安全响应头",
+              "shortDescription": {
+                "text": "Coverage: 基线侦察 / 安全响应头"
+              },
+              "fullDescription": {
+                "text": "Coverage of 基线侦察 / 安全响应头 across the assessed attack surface."
+              },
+              "defaultConfiguration": {
+                "level": "none"
+              },
+              "help": {
+                "text": "Coverage of 基线侦察 / 安全响应头 across the assessed attack surface.",
+                "markdown": "Coverage of 基线侦察 / 安全响应头 across the assessed attack surface."
+              },
+              "properties": {
+                "tags": [
+                  "coverage"
+                ]
+              }
+            },
+            {
+              "id": "strix-coverage/信息泄露-堆栈-路径-版本",
+              "name": "信息泄露（堆栈/路径/版本）",
+              "shortDescription": {
+                "text": "Coverage: 信息泄露（堆栈/路径/版本）"
+              },
+              "fullDescription": {
+                "text": "Coverage of 信息泄露（堆栈/路径/版本） across the assessed attack surface."
+              },
+              "defaultConfiguration": {
+                "level": "none"
+              },
+              "help": {
+                "text": "Coverage of 信息泄露（堆栈/路径/版本） across the assessed attack surface.",
+                "markdown": "Coverage of 信息泄露（堆栈/路径/版本） across the assessed attack surface."
+              },
+              "properties": {
+                "tags": [
+                  "coverage"
+                ]
+              }
+            }
+          ],
+          "version": "1.7.0"
+        }
+      },
+      "results": [
+        {
+          "ruleId": "strix-coverage/idor-bola-匿名读取他人购物车",
+          "ruleIndex": 0,
+          "kind": "pass",
+          "level": "none",
+          "message": {
+            "text": "IDOR / BOLA —— 匿名读取他人购物车 — Ruled out: GET /rest/basket/{1,2}\n\n匿名 GET /rest/basket/1 与 /rest/basket/2 均返回 401 UnauthorizedError: No Authorization header was found（Content-Length 972）；大小写变体 /REST/BASKET/1、/rest/Basket/1 与尾斜杠 /rest/basket/1/ 同为 401/972，说明 express-jwt 校验挂在与路由大小写/斜杠无关的应用级中间件链上，覆盖所有可达路径。仅证明认证闸门存在，认证后 BOLA 未测。"
+          },
+          "locations": [
+            {
+              "logicalLocations": [
+                {
+                  "fullyQualifiedName": "GET /rest/basket/{1,2}"
+                }
+              ]
+            }
+          ],
+          "properties": {
+            "strix": {
+              "coverage_outcome": "ruled_out",
+              "risk_area": "IDOR / BOLA —— 匿名读取他人购物车",
+              "surface": "GET /rest/basket/{1,2}",
+              "recorded_by": "越权与数据泄露",
+              "source": "agent_reported"
+            }
+          }
+        },
+        {
+          "ruleId": "strix-coverage/未授权用户对象读取-api-users-纵向越权",
+          "ruleIndex": 1,
+          "kind": "pass",
+          "level": "none",
+          "message": {
+            "text": "未授权用户对象读取（/api/Users 纵向越权） — Ruled out: GET /api/Users/{id} 与 /api/Users\n\n匿名 /api/Users/1、/api/Users 均 401/972（No Authorization header）；/api/users/1、/API/Users/1、/api/Users/1/ 同为 401/972。控制点为应用级 express-jwt 中间件，在进入 handler 前统一拒绝，覆盖大小写与尾斜杠变体。带伪造 Bearer 头返回 401「Invalid token: no header in signature」同样在中间件层。"
+          },
+          "locations": [
+            {
+              "logicalLocations": [
+                {
+                  "fullyQualifiedName": "GET /api/Users/{id} 与 /api/Users"
+                }
+              ]
+            }
+          ],
+          "properties": {
+            "strix": {
+              "coverage_outcome": "ruled_out",
+              "risk_area": "未授权用户对象读取（/api/Users 纵向越权）",
+              "surface": "GET /api/Users/{id} 与 /api/Users",
+              "recorded_by": "越权与数据泄露",
+              "source": "agent_reported"
+            }
+          }
+        },
+        {
+          "ruleId": "strix-coverage/认证后-bola-同一-token-读-basket-1-与-basket-2-的对象级授权绑定",
+          "ruleIndex": 2,
+          "kind": "open",
+          "level": "none",
+          "message": {
+            "text": "认证后 BOLA —— 同一 token 读 basket/1 与 basket/2 的对象级授权绑定 — Requires further review: GET /rest/basket/{id}（持合法 JWT 时）\n\nGET /rest/basket/1 与 /rest/basket/2 在持有合法 JWT 情况下是否绑定调用者，未做验证：当前纪律仅允许 GET/HEAD，无法注册第二个账号（POST /api/Users），也没有任何合法会话。缺口=缺少两个身份的有效 token，无法构造 owner vs non-owner 差分。已在 findings 中标注为未验证，不得计为安全。"
+          },
+          "locations": [
+            {
+              "logicalLocations": [
+                {
+                  "fullyQualifiedName": "GET /rest/basket/{id}（持合法 JWT 时）"
+                }
+              ]
+            }
+          ],
+          "properties": {
+            "strix": {
+              "coverage_outcome": "needs_follow_up",
+              "risk_area": "认证后 BOLA —— 同一 token 读 basket/1 与 basket/2 的对象级授权绑定",
+              "surface": "GET /rest/basket/{id}（持合法 JWT 时）",
+              "recorded_by": "越权与数据泄露",
+              "source": "agent_reported"
+            }
+          }
+        },
+        {
+          "ruleId": "strix-coverage/未授权读取他人购物车条目-认证详情-密保答案-投诉正文-支付卡-地址",
+          "ruleIndex": 3,
+          "kind": "pass",
+          "level": "none",
+          "message": {
+            "text": "未授权读取他人购物车条目 / 认证详情 / 密保答案 / 投诉正文 / 支付卡 / 地址 — Ruled out: GET /api/BasketItems、/rest/user/authentication-details/{id}、/api/SecurityAnswers、/api/Complaints、/api/Cards、/api/Addresss、/api/Feedbacks/{id}\n\n匿名 /api/BasketItems 与 /api/BasketItems/1 均 401/972（No Authorization header），被 express-jwt 中间件在 handler 前拦截；/rest/user/authentication-details/1、/2 及无 id 版本同样 401/972，/api/SecurityAnswers、/api/Complaints、/api/Complaints/1、/api/Feedbacks/1 全部 401/972。/api/Cards、/api/Addresss 返回 401 但体为 JSON {\"status\":\"error\",\"message\":\"Cannot read properties of undefined (reading 'data')\"}（83 字节）——仍是拒绝，非数据泄露。"
+          },
+          "locations": [
+            {
+              "logicalLocations": [
+                {
+                  "fullyQualifiedName": "GET /api/BasketItems、/rest/user/authentication-details/{id}、/api/SecurityAnswers、/api/Complaints、/api/Cards、/api/Addresss、/api/Feedbacks/{id}"
+                }
+              ]
+            }
+          ],
+          "properties": {
+            "strix": {
+              "coverage_outcome": "ruled_out",
+              "risk_area": "未授权读取他人购物车条目 / 认证详情 / 密保答案 / 投诉正文 / 支付卡 / 地址",
+              "surface": "GET /api/BasketItems、/rest/user/authentication-details/{id}、/api/SecurityAnswers、/api/Complaints、/api/Cards、/api/Addresss、/api/Feedbacks/{id}",
+              "recorded_by": "越权与数据泄露",
+              "source": "agent_reported"
+            }
+          }
+        },
+        {
+          "ruleId": "strix-coverage/未授权读取全站反馈-评论者身份",
+          "ruleIndex": 4,
+          "kind": "pass",
+          "level": "none",
+          "message": {
+            "text": "未授权读取全站反馈 / 评论者身份 — No issue identified: GET /api/Feedbacks\n\n匿名 GET /api/Feedbacks 返回 200/3033，18 条反馈含 UserId、comment、rating、时间戳；但评论内嵌 email 已被服务端掩码（\"***in@juice-sh.op\"、\"***ereum@juice-sh.op\"），无一条明文邮箱。属设计公开的公开留言板 + 内建掩码控制，未见越权或明文 PII。注：id=9 存在他人测试遗留内容 \"PWNED-by-A-via-BOLA\"，仅作环境状态记录。"
+          },
+          "locations": [
+            {
+              "logicalLocations": [
+                {
+                  "fullyQualifiedName": "GET /api/Feedbacks"
+                }
+              ]
+            }
+          ],
+          "properties": {
+            "strix": {
+              "coverage_outcome": "no_issue_found",
+              "risk_area": "未授权读取全站反馈 / 评论者身份",
+              "surface": "GET /api/Feedbacks",
+              "recorded_by": "越权与数据泄露",
+              "source": "agent_reported"
+            }
+          }
+        },
+        {
+          "ruleId": "strix-coverage/招聘-岗位接口未授权数据读取",
+          "ruleIndex": 5,
+          "kind": "notApplicable",
+          "level": "none",
+          "message": {
+            "text": "招聘/岗位接口未授权数据读取 — Not applicable: GET /api/Jobs（/#/jobs 对应接口）\n\nJuice Shop 无 /api/Jobs 路由：GET /api/Jobs 返回 500 `Error: Unexpected path: /api/Jobs`（2418 字节）；同类 /api/Memories、/rest/memories/1、/rest/products/reviews 亦为 500 Unexpected path。/#/jobs 仅为静态 SPA 视图，无对应数据接口可测。"
+          },
+          "locations": [
+            {
+              "logicalLocations": [
+                {
+                  "fullyQualifiedName": "GET /api/Jobs（/#/jobs 对应接口）"
+                }
+              ]
+            }
+          ],
+          "properties": {
+            "strix": {
+              "coverage_outcome": "not_applicable",
+              "risk_area": "招聘/岗位接口未授权数据读取",
+              "surface": "GET /api/Jobs（/#/jobs 对应接口）",
+              "recorded_by": "越权与数据泄露",
+              "source": "agent_reported"
+            }
+          }
+        },
+        {
+          "ruleId": "strix-coverage/配置文件未授权读取-含密钥-凭据",
+          "ruleIndex": 6,
+          "kind": "pass",
+          "level": "none",
+          "message": {
+            "text": "配置文件未授权读取（含密钥/凭据） — No issue identified: GET /rest/admin/application-configuration\n\nGET /rest/admin/application-configuration 匿名 200/23577，返回应用配置 JSON（server.baseUrl=http://localhost:3000、application.domain=juice-sh.op、googleOauth.clientId=1005568560502-6hm16lef8oh46hr2d98vf2ohlnj4nfhq.apps.googleusercontent.com 等）。逐一检索 apiKey/secret/clientSecret/token/password/smtp 关键字未见凭据值；OAuth clientId 本身为公开标识，config 中不含用户个人数据。按分级仅记「观察」，不构成数据泄露类漏洞。"
+          },
+          "locations": [
+            {
+              "logicalLocations": [
+                {
+                  "fullyQualifiedName": "GET /rest/admin/application-configuration"
+                }
+              ]
+            }
+          ],
+          "properties": {
+            "strix": {
+              "coverage_outcome": "no_issue_found",
+              "risk_area": "配置文件未授权读取（含密钥/凭据）",
+              "surface": "GET /rest/admin/application-configuration",
+              "recorded_by": "越权与数据泄露",
+              "source": "agent_reported"
+            }
+          }
+        },
+        {
+          "ruleId": "strix-coverage/硬编码密钥-凭证泄露",
+          "ruleIndex": 7,
+          "kind": "pass",
+          "level": "none",
+          "message": {
+            "text": "硬编码密钥/凭证泄露 — No issue identified: /main.js 前端产物\n\n下载 1207722 字节 bundle 后 grep -nE '(apiKey|api_key|secret|privateKey|BEGIN RSA|AKIA|client_secret|password=...)'：命中项全部是代码标识符与模板占位（line1 keysService.submitKey({privateKey:t}) 为表单字段、line1520 FontAwesome iconName:user-secret、line6472 totpSecret 来自服务端 /rest/2fa/status 响应、line6548 为 Angular 模板属性名），无任何真实密钥值、无 AKIA/BEGIN RSA 命中、无硬编码口令。"
+          },
+          "locations": [
+            {
+              "logicalLocations": [
+                {
+                  "fullyQualifiedName": "/main.js 前端产物"
+                }
+              ]
+            }
+          ],
+          "properties": {
+            "strix": {
+              "coverage_outcome": "no_issue_found",
+              "risk_area": "硬编码密钥/凭证泄露",
+              "surface": "/main.js 前端产物",
+              "recorded_by": "静态产物与文件暴露",
+              "source": "agent_reported"
+            }
+          }
+        },
+        {
+          "ruleId": "strix-coverage/source-map-源码泄露-软-404-误判",
+          "ruleIndex": 8,
+          "kind": "pass",
+          "level": "none",
+          "message": {
+            "text": "source map 源码泄露 / 软 404 误判 — Ruled out: /main.js.map、/sitemap.xml、/swagger.json、/api-docs/swagger.json\n\nGET /main.js.map 返回 200 但 content-type text/html、9393 字节，md5(9d114a09b418b38893d8843cb7c0026d) 与 GET /nonexistent-xyz123 返回的 SPA 首页完全一致，证明是 SPA fallback 软 404，映射文件不存在。同理 /sitemap.xml、/swagger.json 均为同一份 9393 字节 index.html。真实 Swagger UI 在 /api-docs/（200/3106 字节 Swagger UI 页面），由此可判定不存在可用于源码还原的 source map。"
+          },
+          "locations": [
+            {
+              "logicalLocations": [
+                {
+                  "fullyQualifiedName": "/main.js.map、/sitemap.xml、/swagger.json、/api-docs/swagger.json"
+                }
+              ]
+            }
+          ],
+          "properties": {
+            "strix": {
+              "coverage_outcome": "ruled_out",
+              "risk_area": "source map 源码泄露 / 软 404 误判",
+              "surface": "/main.js.map、/sitemap.xml、/swagger.json、/api-docs/swagger.json",
+              "recorded_by": "静态产物与文件暴露",
+              "source": "agent_reported"
+            }
+          }
+        },
+        {
+          "ruleId": "strix-coverage/password-reset-logic-user-enumeration-sqli",
+          "ruleIndex": 9,
+          "kind": "pass",
+          "level": "none",
+          "message": {
+            "text": "Password reset logic / user enumeration / SQLi — No issue identified: POST /rest/user/reset-password\n\n同一 payload 分别用存在账号 admin@juice-sh.op 与不存在 email nouser-zz@example.invalid 请求，响应逐字节相同（HTTP 401 / 34 B / \"Wrong answer to security question.\"），先校验安全问题且不回显 SQL 错误，故该接口在本轮未显示用户枚举或注入通道。"
+          },
+          "locations": [
+            {
+              "logicalLocations": [
+                {
+                  "fullyQualifiedName": "POST /rest/user/reset-password"
+                }
+              ]
+            }
+          ],
+          "properties": {
+            "strix": {
+              "coverage_outcome": "no_issue_found",
+              "risk_area": "Password reset logic / user enumeration / SQLi",
+              "surface": "POST /rest/user/reset-password",
+              "recorded_by": "认证与注入验证员",
+              "source": "agent_reported"
+            }
+          }
+        },
+        {
+          "ruleId": "strix-coverage/information-disclosure",
+          "ruleIndex": 10,
+          "kind": "pass",
+          "level": "none",
+          "message": {
+            "text": "Information disclosure — No issue identified: GET /api/SecurityQuestions 与 GET /encryptionkeys/jwt.pub\n\n匿名 GET /api/SecurityQuestions 返回 200/1934B 的固定 14 问题库，不含任何用户答案；属公开静态数据，未构成未授权数据访问，仅作观察记录。"
+          },
+          "locations": [
+            {
+              "logicalLocations": [
+                {
+                  "fullyQualifiedName": "GET /api/SecurityQuestions 与 GET /encryptionkeys/jwt.pub"
+                }
+              ]
+            }
+          ],
+          "properties": {
+            "strix": {
+              "coverage_outcome": "no_issue_found",
+              "risk_area": "Information disclosure",
+              "surface": "GET /api/SecurityQuestions 与 GET /encryptionkeys/jwt.pub",
+              "recorded_by": "认证与注入验证员",
+              "source": "agent_reported"
+            }
+          }
+        },
+        {
+          "ruleId": "strix-coverage/基线侦察-安全响应头",
+          "ruleIndex": 11,
+          "kind": "pass",
+          "level": "none",
+          "message": {
+            "text": "基线侦察 / 安全响应头 — No issue identified: http://117.72.199.2:3000/ root path + static assets\n\nGET / 返回 200、Content-Length 9393、无 Set-Cookie；响应头含 X-Content-Type-Options: nosniff、X-Frame-Options: SAMEORIGIN，CORS 为 Access-Control-Allow-Origin: *，无 CSP/HSTS（仅加固建议，不构成漏洞）。静态资源 main.js/polyfills.js/scripts.js/styles.css 均 200 正常返回。"
+          },
+          "locations": [
+            {
+              "logicalLocations": [
+                {
+                  "fullyQualifiedName": "http://117.72.199.2:3000/ root path + static assets"
+                }
+              ]
+            }
+          ],
+          "properties": {
+            "strix": {
+              "coverage_outcome": "no_issue_found",
+              "risk_area": "基线侦察 / 安全响应头",
+              "surface": "http://117.72.199.2:3000/ root path + static assets",
+              "recorded_by": "基线侦查 Agent",
+              "source": "agent_reported"
+            }
+          }
+        },
+        {
+          "ruleId": "strix-coverage/信息泄露-堆栈-路径-版本",
+          "ruleIndex": 12,
+          "kind": "open",
+          "level": "none",
+          "message": {
+            "text": "信息泄露（堆栈/路径/版本） — Requires further review: http://117.72.199.2:3000/api 错误页\n\nGET /api 与 /api/health 返回 500，body 泄露 \"OWASP Juice Shop (Express ^4.22.1)\" 及绝对路径堆栈 /juice-shop/build/routes/angular.js:18:18、/juice-shop/node_modules/express/lib/router/layer.js:95:5。属侦察辅助型泄露，置信度中；本子 Agent 无漏洞上报工具，交由主 Agent 定级。"
+          },
+          "locations": [
+            {
+              "logicalLocations": [
+                {
+                  "fullyQualifiedName": "http://117.72.199.2:3000/api 错误页"
+                }
+              ]
+            }
+          ],
+          "properties": {
+            "strix": {
+              "coverage_outcome": "needs_follow_up",
+              "risk_area": "信息泄露（堆栈/路径/版本）",
+              "surface": "http://117.72.199.2:3000/api 错误页",
+              "recorded_by": "基线侦查 Agent",
+              "source": "agent_reported"
+            }
+          }
+        }
+      ],
+      "invocations": [
+        {
+          "executionSuccessful": true
+        }
+      ]
+    }
+  ]
+}
