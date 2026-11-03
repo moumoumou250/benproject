@@ -10,7 +10,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
 
-from Ben.config import load_settings
+from Ben.config import codex, load_settings
 
 
 logger = logging.getLogger(__name__)
@@ -21,6 +21,10 @@ def _missing_required_vars() -> list[str]:
     missing: list[str] = []
     if not settings.llm.model:
         missing.append("LLM_MODEL")
+    if codex.subscription_model(settings.llm.model):
+        if not codex.is_authenticated():
+            missing.append("ChatGPT login: run ben auth login chatgpt")
+        return missing
     if not settings.llm.api_key and not settings.llm.vendor_key_sufficient():
         missing.append("LLM_API_KEY")
     return missing

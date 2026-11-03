@@ -1,6 +1,6 @@
 # BenProject 直接依赖（Python 3.12）
 # 安装：.venv/Scripts/python.exe -m pip install -r requirements.txt
-# 版本与当前 .venv 对齐，保证可复现；间接依赖由 pip 自动解析。
+# 直接依赖与 pyproject.toml 保持一致；完整锁定环境请使用 uv sync --frozen。
 
 # openai-agents SDK（对应 strix 的核心依赖，含 litellm 多模型路由）
 openai-agents[litellm]>=0.19.0,<0.20
@@ -52,3 +52,12 @@ rich>=13.9,<14
 
 # 代码高亮：报告与 Viewer 的代码块着色（Ben.report.writer）
 pygments>=2.18,<3
+
+# 云厂商凭据链：litellm 的 Vertex AI / Bedrock 依赖这两条官方 SDK。
+# 随包安装（不做 optional extras），保证任意 provider 开箱可用。
+google-auth>=2.55,<3
+boto3>=1.43,<2
+
+# RAG only; no LangChain agent orchestration
+langchain-core>=1,<2
+langchain-text-splitters>=1,<2

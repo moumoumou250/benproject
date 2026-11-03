@@ -15,6 +15,8 @@ license = "Apache-2.0"
 requires-python = ">=3.12"
 keywords = ["security", "pentest", "agent", "llm", "docker"]
 dependencies = [
+  "langchain-core>=1,<2",
+  "langchain-text-splitters>=1,<2",
   "openai-agents[litellm]>=0.19.0,<0.20",
   "openai>=2.45.0,<3",
   "litellm>=1.101.0",
@@ -34,6 +36,10 @@ dependencies = [
   "reportlab>=5.0.0,<6",
   "rich>=13.9,<14",
   "pygments>=2.18,<3",
+  # 多模型路由的云厂商凭据链：litellm 的 Vertex AI / Bedrock 走这两条
+  # 官方 SDK（随包安装，不做成 extras，保证任意 provider 开箱可用）。
+  "google-auth>=2.55,<3",
+  "boto3>=1.43,<2",
 ]
 
 [project.scripts]
@@ -105,6 +111,6 @@ ignore = [
 "Ben/tools/**" = ["ARG001"]
 # 入口保留宽异常兜底（终端渲染/子进程失败不应中断扫描）
 "Ben/interface/main.py" = ["BLE001"]
-"Ben/interface/cli.py" = ["BLE001"]
+"Ben/interface/cli/runner.py" = ["BLE001"]
 "tests/**" = ["S101", "ARG001"]
 "scripts/**" = ["INP001"]

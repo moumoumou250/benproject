@@ -59,6 +59,7 @@ from Ben.tools.agents_graph.tools import (
 from Ben.tools.coverage.tools import list_coverage, record_coverage, update_coverage
 from Ben.tools.finish.tool import finish_scan
 from Ben.tools.load_skill.tool import load_skill
+from Ben.rag.tools import search_knowledge
 from Ben.tools.mcp.agent_tools import (
     call_mcp,
     describe_mcp,
@@ -918,6 +919,7 @@ def _without_coverage_step(tool: FunctionTool) -> FunctionTool:
 _BASE_TOOLS: tuple[Tool, ...] = (
     think,
     load_skill,
+    search_knowledge,
     create_todo,
     list_todos,
     update_todo,

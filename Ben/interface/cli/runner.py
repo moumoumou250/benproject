@@ -26,7 +26,7 @@ from rich.panel import Panel
 from rich.text import Text
 
 from Ben.config import load_settings
-from Ben.interface.stats import (
+from Ben.interface.terminal.stats import (
     build_final_stats_text,
     build_live_stats_text,
     format_vulnerability_report,

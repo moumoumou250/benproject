@@ -84,6 +84,8 @@ def test_parse_redirect_input(value: str, expected: tuple[str | None, str | None
 @pytest.mark.parametrize(
     ("model", "expected"),
     [
+        ("chatgpt", "gpt-6.1-sol"),
+        ("  ChatGPT  ", "gpt-6.1-sol"),
         ("chatgpt/gpt-5.4", "gpt-5.4"),
         ("ChatGPT/GPT-5.5", "GPT-5.5"),
         ("  chatgpt/gpt-5.4  ", "gpt-5.4"),

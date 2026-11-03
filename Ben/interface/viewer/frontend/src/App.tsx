@@ -41,7 +41,7 @@ const SEVERITY_ORDER: VulnerabilitySeverity[] = ["critical", "high", "medium", "
 const POLL_MS = 500;
 
 export default function App() {
-  const [activeRun, setActiveRun] = useState<string | null>(null);
+  const [activeRun, setActiveRun] = useState<string | null>(() => new URLSearchParams(location.search).get("run"));
   const [run, setRun] = useState<LoadedRun | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);

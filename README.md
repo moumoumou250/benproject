@@ -105,7 +105,13 @@ BenProject/
 │   │   ├── usage.py            # 用量账本
 │   │   ├── runs.py             # 运行记录
 │   │   └── state.py            # 运行状态快照
-│   └── skills/                 # 知识片段目录（scan_modes / analysis / coordination /
+│   ├── rag/                    # 知识资料向量化与 RAG 检索（LangChain 不编排）
+│   │   ├── knowledge_base/     # 知识资料
+│   │   ├── embeddings/         # 向量化
+│   │   ├── vector_store/       # 向量知识库
+│   │   ├── retriever/          # 检索
+│   │   └── tools/              # 检索工具入口
+│   └── skills/                 # 操作规范与执行流程（scan_modes / analysis / coordination /
 │                               #   reconnaissance / technologies / vulnerabilities /
 │                               #   protocols / tooling / custom）
 ├── containers/                 # Docker 镜像构建资源
@@ -115,6 +121,9 @@ BenProject/
 │   └── smoke_core.py           # 核心模块导入 + 对象构造冒烟（不调用模型，0 token）
 └── reports/                    # report_*.md / trace_*.json 输出目录
 ```
+
+操作规范放在 `Ben/skills/`；知识资料通过 `Ben/rag/` 写入向量知识库并按需检索。
+LangChain 仅用于 RAG，不参与 Agent 编排。RAG 已接入资料入库、SQLite 向量持久化、命令行检索和 Agent 检索工具，详见 [RAG 说明](Ben/rag/README.md)。
 
 ## 三、环境要求
 
@@ -262,3 +271,67 @@ socket、不使用特权容器。
 本项目 Agent 的 prompt 内嵌了其中与本程序相关的纪律（授权范围、证据分级、
 报告要求）；人机协作层面的完整流程以该目录 rules 原文为准，冲突时按目录内
 优先级裁决。
+
+
+## ChatGPT / Codex subscription
+
+Sign in using ChatGPT OAuth. Third-party subscription access is not an officially supported OpenAI integration.
+
+```powershell
+.\.venv\Scripts\python.exe main.py auth login chatgpt
+.\.venv\Scripts\python.exe main.py auth status
+# If the local callback is unavailable, paste the callback URL manually:
+.\.venv\Scripts\python.exe main.py auth login chatgpt --manual
+```
+
+Set `LLM_MODEL=chatgpt/<model available to your account>` in `.env`.
+This route does not require `LLM_API_KEY` or `LLM_API_BASE`.
+Login does not change your model selection. Credentials are stored separately in
+`~/.ben/subscription-auth.json`; expiring access tokens are refreshed automatically.
+
+```powershell
+# Make a real minimal request (consumes account usage):
+.\.venv\Scripts\python.exe main.py --selftest-llm
+# Remove the stored subscription credentials:
+.\.venv\Scripts\python.exe main.py auth logout
+```
+
+
+### 跨平台开发检查
+
+Windows、Linux 和 macOS 均可使用 `python scripts/dev.py <任务>`，支持
+`test`、`lint`、`format-check`、`smoke`、`tui-build`、`tui-test`、`tui-lint`、`viewer`、`package`。
+TUI 构建需要 Go 1.24+；Viewer 需要 Node.js；package 需要安装 Python build 包。
+
+推荐使用 `uv sync --frozen` 安装锁定的开发环境，使用 `uv lock` 明确更新依赖，
+提交 pyproject.toml、requirements.txt 和 uv.lock。requirements.txt 保留作为 pip 安装入口，
+其直接依赖通过测试与 pyproject.toml 保持一致；需要完整锁定环境时使用 uv.lock。
+GitHub Actions 检查 Python（Windows/Linux）、Viewer 类型与构建、Go TUI 和 wheel 安装。
+
+
+### React 网站测试控制台
+
+首次构建前端：
+
+```powershell
+cd Ben/interface/viewer/frontend
+npm ci
+npm run typecheck
+npm run build
+cd ../../../..
+```
+
+从项目根目录启动：
+
+```powershell
+.venv/Scripts/python.exe -m Ben.interface.web
+```
+
+浏览器会自动打开本地 React 控制台（默认 8765 端口）。也可使用终端打印的完整链接打开。
+输入已授权的网站 URL，选择测试模式、轮数、预算，填写测试要求后启动。
+页面显示执行日志，可进入实时进度、漏洞与报告视图；历史记录保存在 `strix_runs/`。
+使用现有模型和 Docker 配置，无需另填 API key。`--no-open` 禁止自动打开浏览器，
+`--port 端口号` 指定端口。关闭控制台不会终止已启动的扫描。
+
+也可以在 React 前端目录执行 `npm start`，由前端启动入口自动启动 Python 服务并打开网页。
+首次运行或修改前端后先执行 `npm run build`。

@@ -36,7 +36,7 @@ def strix_records() -> Iterator[list[logging.LogRecord]]:
             records.append(record)
 
     handler = _Collect()
-    root = logging.getLogger("strix")
+    root = logging.getLogger("Ben")
     root.addHandler(handler)
     try:
         yield records
@@ -93,7 +93,7 @@ def test_every_unraisable_is_logged_not_printed(
 def test_unraisable_is_dropped_when_strix_has_no_handlers(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    root = logging.getLogger("strix")
+    root = logging.getLogger("Ben")
     saved, root.handlers = root.handlers, []
     try:
         sys.unraisablehook(_unraisable(RuntimeError("late"), object()))  # type: ignore[arg-type]

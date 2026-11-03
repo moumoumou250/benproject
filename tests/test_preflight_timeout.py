@@ -10,8 +10,8 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from Ben.config import load_settings, loader
-from Ben.interface import scan_setup
-from Ben.interface.scan_setup import preflight_model_connection, preflight_request
+from Ben.interface.cli import scan_setup
+from Ben.interface.cli.scan_setup import preflight_model_connection, preflight_request
 
 
 # ``Ben.interface`` re-exports the ``main`` function, which shadows the submodule name.

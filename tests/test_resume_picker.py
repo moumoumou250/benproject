@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from rich.console import Console
 
-from Ben.interface.resume_picker import (
+from Ben.interface.terminal.resume_picker import (
     KEY_BACKSPACE,
     KEY_DOWN,
     KEY_END,

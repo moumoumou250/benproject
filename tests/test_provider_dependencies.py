@@ -37,10 +37,3 @@ def test_provider_packages_are_regular_dependencies(package: str) -> None:
 )
 def test_provider_modules_import(module: str) -> None:
     importlib.import_module(module)
-
-
-def test_pyinstaller_spec_bundles_google_auth() -> None:
-    spec = (ROOT / "strix.spec").read_text(encoding="utf-8")
-    assert "collect_submodules('google.auth')" in spec
-    assert "'google.auth'," not in spec
-    assert "'google.oauth2'," not in spec

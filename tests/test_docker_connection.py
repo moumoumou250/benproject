@@ -19,7 +19,7 @@ from Ben.runtime.docker_connection import (
 )
 
 
-cli_utils: Any = importlib.import_module("Ben.interface.targets")
+cli_utils: Any = importlib.import_module("Ben.interface.shared.targets")
 
 
 def _sdk_error(inner: BaseException) -> DockerException:

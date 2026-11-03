@@ -3,7 +3,7 @@
 多目标入口：
   - 位置参数 ``target``（向后兼容，单目标）与 ``-t/--target``（可重复）等价合并；
   - ``--target-list`` 从文件读取目标（每行一个，# 为注释）；
-  - parse 阶段经 Ben.interface.targets.build_targets_info 完成目标分类、
+  - parse 阶段经 Ben.interface.shared.targets.build_targets_info 完成目标分类、
     本地目录挂载校验、workspace 子目录分配与 localhost 改写；
     结果挂在 ``args.targets_info``（空列表 = 未指定，由 runner 回退白名单首项）。
 
@@ -26,6 +26,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 
@@ -33,7 +34,18 @@ class ResumeError(ValueError):
     """A prior run cannot be resumed as recorded; the message names why."""
 
 
-def parse_args() -> argparse.Namespace:
+def terminal_attached() -> bool:
+    """本进程是否连着终端（决定 TUI 还是 headless）。
+
+    实现在 :mod:`Ben.interface.terminal.text`；这里保留模块级别名，让
+    ``--fail-on`` 的 headless 校验可被单测替换（对齐 strix 的同名函数）。
+    """
+    from Ben.interface.terminal.text import terminal_attached as _attached
+
+    return _attached()
+
+
+def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="BenProject 多 Agent 漏洞测试工具（DeepSeek + Docker）"
     )
@@ -184,6 +196,23 @@ def parse_args() -> argparse.Namespace:
     if args.max_budget_usd is not None and args.max_budget_usd <= 0:
         parser.error("--max-budget must be greater than 0")
 
+    # --fail-on 只在 headless 有意义：没有终端时 main() 本来就走 headless，
+    # 只有 TUI 真要打开时该参数才是错配（对齐 strix）。
+    if args.fail_on and not args.non_interactive and terminal_attached():
+        parser.error("--fail-on only applies to headless runs; add -n/--non-interactive.")
+
+    # MCP 运行级选择：--mcp-config 覆盖 loader 的默认路径，--mcp-server /
+    # --mcp-exclude 写入选集环境变量（loader 在 runner 构造时读取）。
+    if args.mcp_config:
+        mcp_config_path = Path(args.mcp_config).expanduser()
+        if not mcp_config_path.is_file():
+            parser.error(f"--mcp-config file not found: {args.mcp_config}")
+        os.environ["BEN_MCP_CONFIG"] = str(mcp_config_path)
+    if args.mcp_server:
+        os.environ["BEN_MCP_ONLY"] = ",".join(args.mcp_server)
+    if args.mcp_exclude:
+        os.environ["BEN_MCP_EXCLUDE"] = ",".join(args.mcp_exclude)
+
     # 冲突校验（对齐 strix）：--instruction 与 --instruction-file 互斥。
     if args.instruction and args.instruction_file:
         parser.error(
@@ -211,13 +240,20 @@ def parse_args() -> argparse.Namespace:
                 "original target list."
             )
         if not args.resume.strip():
-            # 裸 --resume：交互模式下留给 TUI picker；headless 下直接报错，
-            # 列出可恢复 runs 并提示带名字重试。
-            from Ben.interface.terminal_text import terminal_attached
-
-            if args.non_interactive or not terminal_attached():
-                parser.error(resume_run_list_message("--resume needs a run name."))
+            # 裸 --resume：main() 先开既往 runs 的内联选择器再启动；
+            # headless 没人可选，于是列出 runs 并报错。
+            args.resume = None
             args.resume_picker = True
+            if args.non_interactive:
+                parser.error(
+                    resume_run_list_message("--resume needs a run name in headless mode.")
+                )
+            from Ben.core.paths import RUNS_DIR_NAME
+            from Ben.report.runs import list_run_summaries
+
+            if not list_run_summaries():
+                parser.error(f"--resume: no runs in ./{RUNS_DIR_NAME} to resume")
+            return args
         try:
             load_resume_state(args)
         except ResumeError as exc:
@@ -225,7 +261,7 @@ def parse_args() -> argparse.Namespace:
         return args
 
     if args.workspace_file:
-        from Ben.interface.targets import resolve_workspace_files
+        from Ben.interface.shared.targets import resolve_workspace_files
 
         try:
             args.workspace_files = resolve_workspace_files(args.workspace_file)
@@ -238,7 +274,7 @@ def parse_args() -> argparse.Namespace:
         targets.append(args.target)
     targets.extend(args.targets or [])
 
-    from Ben.interface.targets import build_targets_info, read_target_list_file
+    from Ben.interface.shared.targets import build_targets_info, read_target_list_file
 
     for target_list_path in args.target_list or []:
         try:
@@ -255,8 +291,6 @@ def parse_args() -> argparse.Namespace:
     else:
         # 交互式且未给目标：进入 TUI 起始页，由用户在界面里填写目标或指令
         # （对齐 strix）。headless 保留原有“回退白名单首项”行为。
-        from Ben.interface.terminal_text import terminal_attached
-
         if not args.non_interactive and terminal_attached():
             args.needs_setup = True
 
@@ -285,12 +319,16 @@ def resume_run_list_message(lead: str) -> str:
 def load_resume_state(args: argparse.Namespace) -> None:
     """从既往 run 的 run.json 恢复 ``args.targets_info`` 等运行输入。
 
-    对齐 strix load_resume_state 的 Ben 子集（无 workspace_mount /
-    workspace_files 概念）：run 缺失、run.json 不可读、挂载目录已删或
-    首个 agent 快照未到时抛 :class:`ResumeError`。
+    对齐 strix load_resume_state：run 缺失、run.json 不可读、工作目录已删、
+    工作区文件路径被篡改或首个 agent 快照未到时抛 :class:`ResumeError`。
     """
     from Ben.core.paths import run_dir_for, run_record_path, runtime_state_dir
-    from Ben.interface.targets import check_mountable_dir, collect_local_sources
+    from Ben.interface.cli.scan_setup import attach_workspace_mount
+    from Ben.interface.shared.targets import (
+        check_mountable_dir,
+        collect_local_sources,
+        resolve_workspace_files,
+    )
     from Ben.report.writer import read_run_record
 
     run_dir = run_dir_for(args.resume)
@@ -306,8 +344,10 @@ def load_resume_state(args: argparse.Namespace) -> None:
         raise ResumeError(f"--resume {args.resume}: run.json unreadable: {exc}") from exc
 
     args.targets_info = state.get("targets_info") or []
-    # 目标全失但留有 instruction 的 run 仍可续跑（由指令驱动）。
-    if not args.targets_info and not state.get("instruction"):
+    # 目标全失的 run 靠 instruction 驱动：只要挂过工作目录，或留下了
+    # instruction，就足以续跑（对齐 strix）。
+    workspace_mount = state.get("workspace_mount") or None
+    if not args.targets_info and not workspace_mount and not state.get("instruction"):
         raise ResumeError(f"--resume {args.resume}: run.json has no targets_info")
 
     for target in args.targets_info:
@@ -334,6 +374,35 @@ def load_resume_state(args: argparse.Namespace) -> None:
     if args.instruction is None:
         args.instruction = state.get("instruction")
     args.local_sources = collect_local_sources(args.targets_info)
+    # 重新挂回 run 启动时用的工作目录。用户此前已确认过该目录，因此不再走
+    # 目标挂载的授权校验，只需确认它还在。
+    args.workspace_mount = workspace_mount
+
+    # 重新放置 run 启动时注入的工作区文件（本次 resume 自带 --workspace-file
+    # 时以本次为准）。持久化记录同样按新 flag 重新校验，避免手改 run.json
+    # 把文件放到工作区之外；两次运行之间被删掉的文件直接丢弃（它只是上下文，
+    # 不构成扫描范围）。
+    if not getattr(args, "workspace_files", None):
+        restored = [
+            f"{source_path}:{workspace_path}"
+            for workspace_file in state.get("workspace_files") or []
+            if isinstance(workspace_file, dict)
+            and (source_path := Path(str(workspace_file.get("source_path") or ""))).is_file()
+            and (workspace_path := str(workspace_file.get("workspace_path") or ""))
+        ]
+        try:
+            args.workspace_files = resolve_workspace_files(restored)
+        except ValueError as error:
+            raise ResumeError(
+                f"--resume {args.resume}: invalid workspace file: {error}"
+            ) from error
+    if workspace_mount:
+        if not Path(workspace_mount).expanduser().is_dir():
+            raise ResumeError(
+                f"--resume {args.resume}: the working directory {workspace_mount} "
+                f"is missing. Restore it before resuming, or start a fresh run."
+            )
+        attach_workspace_mount(args)
     if state.get("diff_scope"):
         args.diff_scope = state.get("diff_scope")
     persisted_scan_mode = state.get("scan_mode")
@@ -347,3 +416,7 @@ def load_resume_state(args: argparse.Namespace) -> None:
             f"该 run 未到首个快照，无可恢复状态。"
             f"去掉 --resume 可用同样的目标重新开始。"
         )
+
+
+# 兼容别名：早期代码以 ``parse_args`` 引用同一入口（上游名为 parse_arguments）。
+parse_args = parse_arguments

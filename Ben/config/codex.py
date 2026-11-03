@@ -57,7 +57,7 @@ _EXPIRY_SKEW_S = 300
 _refresh_lock = threading.Lock()
 
 # Kept separate from cli-config.json so OAuth tokens never land in the env-var config.
-AUTH_PATH = Path.home() / ".strix" / "subscription-auth.json"
+AUTH_PATH = Path.home() / ".ben" / "subscription-auth.json"
 
 
 def _read_store() -> dict[str, Any]:
@@ -327,13 +327,13 @@ def get_valid_token() -> tuple[str, str]:
     guard if near expiry."""
     record = read_record()
     if record is None:
-        raise CodexAuthError("not_authenticated", "not signed in; run: strix auth login")
+        raise CodexAuthError("not_authenticated", "not signed in; run: ben auth login")
     if not _near_expiry(record):
         return record["access"], record["account_id"]
     with _refresh_guard():
         record = read_record()
         if record is None:
-            raise CodexAuthError("not_authenticated", "not signed in; run: strix auth login")
+            raise CodexAuthError("not_authenticated", "not signed in; run: ben auth login")
         if not _near_expiry(record):
             return record["access"], record["account_id"]
         try:
@@ -371,7 +371,7 @@ def build_openai_client() -> AsyncOpenAI:
     )
     request_log.observe_http_client(http_client)
     return AsyncOpenAI(
-        api_key="strix-codex-oauth",  # placeholder; the hook overwrites Authorization
+        api_key="ben-codex-oauth",  # placeholder; the hook overwrites Authorization
         base_url=CODEX_BASE_URL,
         http_client=http_client,
         default_headers={
@@ -392,11 +392,14 @@ def get_subscription_client() -> AsyncOpenAI:
 
 
 SUBSCRIPTION_PREFIX = "chatgpt/"
+DEFAULT_SUBSCRIPTION_MODEL = "gpt-6.1-sol"
 
 
 def subscription_model(model_name: str | None) -> str | None:
     """The model slug behind a ``chatgpt/<model>`` BEN_LLM, or None."""
     name = (model_name or "").strip()
+    if name.lower() == "chatgpt":
+        return DEFAULT_SUBSCRIPTION_MODEL
     if not name.lower().startswith(SUBSCRIPTION_PREFIX):
         return None
     return name[len(SUBSCRIPTION_PREFIX) :] or None

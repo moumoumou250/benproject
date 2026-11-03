@@ -10,8 +10,8 @@ from typing import Any
 import pytest
 
 from Ben.core.inputs import build_root_task, build_scope_context
-from Ben.interface.scan_setup import build_targets_info
-from Ben.interface.targets import infer_target_type, stage_api_specs
+from Ben.interface.cli.scan_setup import build_targets_info
+from Ben.interface.shared.targets import infer_target_type, stage_api_specs
 
 
 OPENAPI = {

@@ -2,7 +2,7 @@
 
 职责边界：
 - strix 把「目标解析」与「展示/统计」混在同一个 ``interface/utils.py``（1,790 行）；
-- Ben 已把目标解析拆到 :mod:`Ben.interface.targets`，本模块只承接展示层，
+- Ben 已把目标解析拆到 :mod:`Ben.interface.shared.targets`，本模块只承接展示层，
   不改动 ``targets.py``，避免覆盖式移植冲掉授权白名单相关逻辑。
 
 本模块为纯展示函数：只读 ``ReportState``，不产生任何副作用，

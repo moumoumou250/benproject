@@ -5,7 +5,7 @@ import asyncio
 import pytest
 
 from Ben.config import Settings
-from Ben.interface.scan_setup import check_header_safe_credentials, preflight_model_connection
+from Ben.interface.cli.scan_setup import check_header_safe_credentials, preflight_model_connection
 
 
 _ENV_KEYS = (

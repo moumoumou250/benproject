@@ -81,7 +81,7 @@ from Ben.core.hooks import (
 from Ben.core.inputs import build_root_task, build_scan_targets, make_model_settings
 from Ben.core.paths import runtime_state_dir
 from Ben.core.sessions import open_agent_session
-from Ben.interface.targets import HOST_GATEWAY_HOSTNAME, is_whitebox_scan
+from Ben.interface.shared.targets import HOST_GATEWAY_HOSTNAME, is_whitebox_scan
 from Ben.llm import request_log
 from Ben.runtime import session_manager
 from Ben.runtime.caido import CaidoBootstrapHandle
@@ -505,7 +505,7 @@ class AgentRunner:
         # 白盒源码挂载（session_manager.build_bind_mounts 的输入）；
         # 空列表 = 纯黑盒，行为与原先一致。
         self.local_sources = local_sources or []
-        # 多目标描述（Ben.interface.targets.build_targets_info 的输出）；
+        # 多目标描述（Ben.interface.shared.targets.build_targets_info 的输出）；
         # None 时 run/run_async 回退为单 web 目标（向后兼容）。
         self.targets_info = targets_info
         # CLI --scan-mode（quick/standard/deep），记入 scan_config/run 记录；
@@ -786,6 +786,7 @@ class AgentRunner:
         # strix 形态的 scan_config：多 targets + scan_mode + 白盒源码挂载 +
         # diff-scope 元数据；root_task 由 build_root_task 据此生成。
         scan_config: dict = {
+            **(report_state.scan_config or {}),
             "targets": targets_info,
             "scan_mode": self.scan_mode,
             "user_instructions": (

@@ -8,8 +8,8 @@ from typing import Any
 
 import pytest
 
-from Ben.interface.scan_setup import attach_workspace_mount
-from Ben.interface.targets import (
+from Ben.interface.cli.scan_setup import attach_workspace_mount
+from Ben.interface.shared.targets import (
     check_mountable_dir,
     collect_local_sources,
     dedupe_local_targets,

@@ -133,6 +133,7 @@ class _ViewerState:
         # Finalized in ``serve()`` once the port is known (the server binds
         # after this state is constructed); see SESSION_COOKIE_PREFIX.
         self.cookie_name = SESSION_COOKIE_PREFIX
+        self.launcher: Any = None
 
 
 def _make_handler(state: _ViewerState) -> type[BaseHTTPRequestHandler]:
@@ -162,7 +163,28 @@ def _make_handler(state: _ViewerState) -> type[BaseHTTPRequestHandler]:
         def do_POST(self) -> None:
             path = urlsplit(self.path).path
             try:
-                if path == "/api/agents/steer":
+                if path == "/api/scans":
+                    if not self._has_session():
+                        self._send_json(HTTPStatus.FORBIDDEN, {"error": "forbidden"})
+                        return
+                    origin = self.headers.get("Origin")
+                    if self.headers.get("Sec-Fetch-Site") == "cross-site" or (
+                        origin and urlsplit(origin).netloc != self.headers.get("Host")
+                    ):
+                        self._send_json(HTTPStatus.FORBIDDEN, {"error": "forbidden"})
+                        return
+                    if state.launcher is None:
+                        self._send_json(HTTPStatus.FORBIDDEN, {"error": "launcher unavailable"})
+                        return
+                    try:
+                        self._send_json(
+                            HTTPStatus.ACCEPTED, state.launcher.start(self._read_body())
+                        )
+                    except ValueError as exc:
+                        self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                    except RuntimeError as exc:
+                        self._send_json(HTTPStatus.CONFLICT, {"error": str(exc)})
+                elif path == "/api/agents/steer":
                     self._handle_steer()
                 else:
                     self._send_json(HTTPStatus.NOT_FOUND, {"error": "unknown endpoint"})
@@ -175,6 +197,8 @@ def _make_handler(state: _ViewerState) -> type[BaseHTTPRequestHandler]:
 
         def _read_body(self) -> dict[str, Any]:
             length = int(self.headers.get("Content-Length") or 0)
+            if not 0 <= length <= 65536:
+                raise ValueError("request body too large")
             raw = self.rfile.read(length) if length else b""
             try:
                 body = json.loads(raw or b"{}")
@@ -203,6 +227,13 @@ def _make_handler(state: _ViewerState) -> type[BaseHTTPRequestHandler]:
             # reachability of an exposed --host port must not grant data access.
             if not self._has_session():
                 self._send_json(HTTPStatus.FORBIDDEN, {"error": "forbidden"})
+                return
+
+            if path == "/api/scans":
+                self._send_json(
+                    HTTPStatus.OK,
+                    state.launcher.status() if state.launcher else {"available": False},
+                )
                 return
 
             run_values = query.get("run")
@@ -374,6 +405,7 @@ def serve(
     host: str = "127.0.0.1",
     port: int = 0,
     open_browser: bool = True,
+    launcher: Any = None,
     steer_handler: Callable[[str, str], bool] | None = None,
 ) -> tuple[ThreadingHTTPServer, str, str]:
     """Start the viewer server on a background thread; return (server, url, token).
@@ -391,6 +423,7 @@ def serve(
     """
     assets_dir = bundle_dir()
     state = _ViewerState(run_dir=run_dir, assets_dir=assets_dir, steer_handler=steer_handler)
+    state.launcher = launcher
     handler = _make_handler(state)
 
     try:

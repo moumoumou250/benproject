@@ -6,7 +6,7 @@ import sys
 from typing import Any
 
 from Ben.core.paths import run_record_path, runs_base_dir
-from Ben.interface.terminal_text import has_terminal_control, sanitize_terminal_text
+from Ben.interface.terminal.text import has_terminal_control, sanitize_terminal_text
 
 _ROOT_COMMANDS = ("view", "completions", "completion")
 _VIEW_FLAGS = ("--port", "--host", "--no-open", "-h", "--help")

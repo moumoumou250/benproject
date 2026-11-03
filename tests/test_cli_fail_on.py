@@ -11,7 +11,7 @@ import pytest
 
 
 cli_main: Any = importlib.import_module("Ben.interface.main")
-cli_args: Any = importlib.import_module("Ben.interface.cli_args")
+cli_args: Any = importlib.import_module("Ben.interface.cli.arguments")
 
 
 def _stub_settings(monkeypatch: pytest.MonkeyPatch) -> None:

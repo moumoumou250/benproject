@@ -53,7 +53,7 @@ MODULES = [
     "Ben.report",
     # 入口
     "Ben.interface.main",
-    "Ben.interface.cli_args",
+    "Ben.interface.cli.arguments",
 ]
 
 

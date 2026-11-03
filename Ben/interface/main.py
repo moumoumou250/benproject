@@ -104,7 +104,7 @@ if _dotenv_path.exists():
     _sync_aliases(["LLM_API_BASE", "OPENAI_BASE_URL", "DEEPSEEK_BASE_URL"])
 
 from Ben.config import load_settings  # noqa: E402
-from Ben.interface.cli_args import parse_args  # noqa: E402
+from Ben.interface.cli.arguments import parse_arguments  # noqa: E402
 
 
 def _setup_logging(verbose: bool) -> None:
@@ -270,12 +270,12 @@ def _run_task(args) -> int:
       → diff instruction_block 前置拼入 instruction
       → 构造 AgentRunner 并运行
     """
-    from Ben.interface.environment import pull_docker_image, validate_environment
+    from Ben.interface.cli.environment import pull_docker_image, validate_environment
 
     validate_environment()
     pull_docker_image()
 
-    from Ben.interface.scan_setup import PreparationError, prepare_run
+    from Ben.interface.cli.scan_setup import PreparationError, prepare_run
 
     try:
         prepared = prepare_run(args)
@@ -289,13 +289,13 @@ def _run_task(args) -> int:
     if not targets_info:
         print("未指定目标，使用白名单首项（runner 内回退）")
 
-    # headless 实时视图（Ben.interface.cli）内部构造 AgentRunner：
+    # headless 实时视图（Ben.interface.cli.runner）内部构造 AgentRunner：
     # - 复用同一份 ReportState，漏洞发现即打印面板（对齐 strix 的 run_cli）；
     # - --verbose 时关闭 Live，避免日志与刷新互相覆盖；
     # - 非 TTY（CI/重定向）时自动降级为纯文本输出。
     import asyncio
 
-    from Ben.interface.cli import run_cli
+    from Ben.interface.cli.runner import run_cli
 
     live = not bool(getattr(args, "verbose", False)) and sys.stdout.isatty()
     result = asyncio.run(run_cli(args, prepared, live=live))
@@ -345,16 +345,20 @@ def _apply_runtime_env(args) -> None:
 
 
 def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == "auth":
+        from Ben.interface.cli.auth import run_auth
+
+        return run_auth(sys.argv[2:])
     if len(sys.argv) > 1 and sys.argv[1] == "view":
         from Ben.interface.viewer.cli import run_view
 
         return run_view(sys.argv[2:])
     if len(sys.argv) > 1 and sys.argv[1] in ("completion", "completions"):
-        from Ben.interface.completions import run_completions
+        from Ben.interface.cli.completions import run_completions
 
         return run_completions(sys.argv[2:])
 
-    args = parse_args()
+    args = parse_arguments()
 
     if getattr(args, "config", None):
         from pathlib import Path
@@ -370,7 +374,7 @@ def main() -> int:
         from rich.console import Console
 
         from Ben.core.paths import RUNS_DIR_NAME
-        from Ben.interface.resume_picker import pick_run
+        from Ben.interface.terminal.resume_picker import pick_run
         from Ben.report.runs import list_run_summaries
 
         runs = list_run_summaries()
@@ -378,7 +382,7 @@ def main() -> int:
         if chosen is None:
             return 0
         args.resume = chosen.run_name
-        from Ben.interface.cli_args import load_resume_state
+        from Ben.interface.cli.arguments import load_resume_state
 
         load_resume_state(args)
         args.targets_info = getattr(args, "targets_info", [])
@@ -390,7 +394,7 @@ def main() -> int:
     if args.selftest_tools:
         return _selftest_tools()
 
-    from Ben.interface.terminal_text import terminal_attached
+    from Ben.interface.terminal.text import terminal_attached
 
     if not getattr(args, "non_interactive", False) and terminal_attached():
         import asyncio

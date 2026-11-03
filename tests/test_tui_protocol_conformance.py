@@ -1,7 +1,7 @@
 """Guard against the Python and Go protocol constants drifting apart.
 
-The wire protocol is declared twice — ``strix/interface/tui/backend/protocol.py``
-for the backend and ``strix/interface/tui/internal/protocol/protocol.go`` for the
+The wire protocol is declared twice — ``Ben/interface/tui/backend/protocol.py``
+for the backend and ``Ben/interface/tui/internal/protocol/protocol.go`` for the
 sidecar. This test parses the Go source shipped in the tree and checks the two
 declarations agree, so a version or capability change in one language cannot
 land silently without the other.
@@ -17,7 +17,7 @@ from Ben.interface.tui.backend.protocol import PROTOCOL_CAPABILITIES, PROTOCOL_V
 
 GO_PROTOCOL_SOURCE = (
     Path(__file__).resolve().parents[1]
-    / "strix"
+    / "Ben"
     / "interface"
     / "tui"
     / "internal"

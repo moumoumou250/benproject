@@ -31,8 +31,8 @@ def build_targets_info(args: argparse.Namespace) -> None:
     The TUI rewrites ``args.target`` to a list of the targets typed on the setup
     screen, while the CLI keeps it a single string, so both shapes are accepted.
     """
-    from Ben.interface.targets import build_targets_info as _build
-    from Ben.interface.targets import read_target_list_file
+    from Ben.interface.shared.targets import build_targets_info as _build
+    from Ben.interface.shared.targets import read_target_list_file
 
     targets: list[str] = []
     raw_target = getattr(args, "target", None)
@@ -53,7 +53,7 @@ def prepare_run(args: argparse.Namespace) -> dict[str, Any]:
 
     Raises :class:`PreparationError` with a user-facing message on failure.
     """
-    from Ben.interface.targets import (
+    from Ben.interface.shared.targets import (
         clone_repository,
         collect_local_sources,
         generate_run_name,
@@ -178,7 +178,7 @@ def attach_workspace_mount(args: argparse.Namespace) -> None:
     if not mount:
         return
 
-    from Ben.interface.targets import derive_local_base_name
+    from Ben.interface.shared.targets import derive_local_base_name
 
     subdir = derive_local_base_name(str(mount))
     args.workspace_subdir = subdir

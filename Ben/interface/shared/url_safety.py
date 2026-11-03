@@ -5,7 +5,7 @@ from __future__ import annotations
 import ipaddress
 from urllib.parse import SplitResult, urlsplit
 
-from Ben.interface.terminal_text import has_terminal_control
+from Ben.interface.terminal.text import has_terminal_control
 
 
 def is_safe_web_url(

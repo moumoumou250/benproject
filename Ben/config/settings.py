@@ -423,7 +423,9 @@ class Settings(_BenSettings):
                 "缺少模型配置：.env 中设置 LLM_MODEL"
                 "（OpenAI 兼容端点写裸模型名；多厂商路由写 厂商/模型，如 moonshot/kimi-k2.6）"
             )
-        if not self.llm.api_key and not self.llm.vendor_key_sufficient():
+        from Ben.config.codex import subscription_model
+
+        if not subscription_model(self.llm.model) and not self.llm.api_key and not self.llm.vendor_key_sufficient():
             problems.append(
                 "缺少 API Key：.env 中设置 LLM_API_KEY，"
                 "或使用带前缀模型并配置厂商专属变量（如 MOONSHOT_API_KEY）"

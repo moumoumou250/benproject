@@ -17,13 +17,13 @@ from Ben.config import load_settings, persist_current
 from Ben.core.agents import AgentCoordinator
 from Ben.core.hooks import BudgetExceededError
 from Ben.core.runner import AgentRunner
-from Ben.interface.scan_setup import (
+from Ben.interface.cli.scan_setup import (
     build_targets_info,
     preflight_model_connection,
     prepare_run,
     telemetry_start,
 )
-from Ben.interface.targets import read_workspace_files
+from Ben.interface.shared.targets import read_workspace_files
 from Ben.interface.tui.backend import TuiBackendServer, TuiController
 from Ben.interface.tui.backend.live_view import TuiLiveView
 from Ben.interface.tui.sidecar import (
@@ -214,7 +214,7 @@ class GoTuiRuntime:
     async def _run_scan(self) -> None:
         settings = load_settings(require_api_key=True)
         try:
-            from Ben.interface.environment import check_docker_installed, pull_docker_image
+            from Ben.interface.cli.environment import check_docker_installed, pull_docker_image
 
             await asyncio.to_thread(check_docker_installed)
             await asyncio.to_thread(pull_docker_image)

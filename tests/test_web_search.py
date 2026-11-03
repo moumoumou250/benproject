@@ -8,7 +8,7 @@ import pytest
 import requests
 
 from Ben.config.settings import IntegrationSettings
-from Ben.interface.environment import _missing_web_search_vars
+from Ben.interface.cli.environment import _missing_web_search_vars
 from Ben.tools.web_search import tool
 
 

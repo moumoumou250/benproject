@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from Ben.core.inputs import build_root_task
-from Ben.interface.targets import read_workspace_files, resolve_workspace_files
+from Ben.interface.shared.targets import read_workspace_files, resolve_workspace_files
 
 
 if TYPE_CHECKING:
