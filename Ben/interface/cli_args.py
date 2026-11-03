@@ -12,8 +12,15 @@
     targets_info/scan_mode/instruction/diff_scope/local_sources，
     并校验 .state/agents.json 存在（root/子 agent 历史在 .state/agents.db）；
   - 与 --target/--target-list 互斥；
-  - 裸 ``--resume``（不带名字）：Ben 无 TUI picker，走 headless 行为——
-    列出可恢复 runs 并报错退出，提示带名字重试。
+  - 裸 ``--resume``：交互模式下由 TUI 选择器挑 run；headless 下列出可恢复
+    runs 并报错退出，提示带名字重试。
+
+运行控制（对齐 strix）：
+  - ``--max-budget`` / ``--max-turns``：成本与轮次上限；
+  - ``--fail-on``：按最高漏洞等级决定 CI 退出码；
+  - ``--workspace-file PATH[:DEST]``：扫描前把本机文件放进 /workspace；
+  - ``--mcp-config`` / ``--mcp-server`` / ``--mcp-exclude``：运行级 MCP 选择；
+  - ``-n/--non-interactive``：关闭 TUI，跑完即退。
 """
 
 from __future__ import annotations
@@ -97,6 +104,65 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="交互模式：agent 可调用 wait_for_user 交还控制权，挂起后等待消息唤醒。",
     )
+    parser.add_argument(
+        "-n",
+        "--non-interactive",
+        action="store_true",
+        help="非交互模式：不启动 TUI，完成后直接退出（CI/脚本用）。",
+    )
+    parser.add_argument(
+        "--workspace-file",
+        action="append",
+        metavar="PATH[:DEST]",
+        help="扫描前把本机文件放进沙箱 /workspace（可重复）。DEST 省略时用文件名，"
+        "例如 --workspace-file ./wordlist.txt:lists/wordlist.txt。",
+    )
+    parser.add_argument(
+        "--max-budget",
+        "--max-budget-usd",
+        dest="max_budget_usd",
+        type=float,
+        metavar="USD",
+        help="本次扫描的 LLM 成本上限（美元）；达到后按预算策略停止或暂停。",
+    )
+    parser.add_argument(
+        "--max-turns",
+        type=int,
+        metavar="N",
+        help="每个 agent 的最大轮数（默认取 settings.max_agent_turns）。",
+    )
+    parser.add_argument(
+        "--fail-on",
+        dest="fail_on",
+        type=str.lower,
+        choices=["critical", "high", "medium", "low", "info"],
+        metavar="SEVERITY",
+        help="发现该等级及以上的漏洞时以退出码 1 结束（CI 门禁）。",
+    )
+    parser.add_argument(
+        "--config",
+        metavar="PATH",
+        help="使用指定 cli-config.json，而不是 ~/.ben/cli-config.json。",
+    )
+    parser.add_argument(
+        "--mcp-config",
+        metavar="PATH",
+        help="使用指定 MCP servers JSON，而不是 ~/.ben/mcp-servers.json。",
+    )
+    parser.add_argument(
+        "--mcp-server",
+        dest="mcp_server",
+        action="append",
+        metavar="NAME",
+        help="只启用指定名称的 MCP 连接（可重复）。",
+    )
+    parser.add_argument(
+        "--mcp-exclude",
+        dest="mcp_exclude",
+        action="append",
+        metavar="NAME",
+        help="跳过指定名称的 MCP 连接（可重复）。",
+    )
     parser.add_argument("--selftest-docker", action="store_true", help="仅验证 Docker 执行器")
     parser.add_argument("--selftest-llm", action="store_true", help="仅验证 DeepSeek 文本调用")
     parser.add_argument("--selftest-tools", action="store_true", help="仅验证工具层真实执行")
@@ -110,6 +176,13 @@ def parse_args() -> argparse.Namespace:
     args.targets_info = []
     args.local_sources = []
     args.diff_scope = {"active": False}
+    args.workspace_files = []
+    args.needs_setup = False
+
+    if args.max_turns is not None and args.max_turns < 1:
+        parser.error("--max-turns must be a positive integer")
+    if args.max_budget_usd is not None and args.max_budget_usd <= 0:
+        parser.error("--max-budget must be greater than 0")
 
     # 冲突校验（对齐 strix）：--instruction 与 --instruction-file 互斥。
     if args.instruction and args.instruction_file:
@@ -138,14 +211,26 @@ def parse_args() -> argparse.Namespace:
                 "original target list."
             )
         if not args.resume.strip():
-            # 裸 --resume：Ben 无 TUI picker，走 headless 行为——列出可恢复
-            # runs 并报错，提示带名字重试。
-            parser.error(resume_run_list_message("--resume needs a run name."))
+            # 裸 --resume：交互模式下留给 TUI picker；headless 下直接报错，
+            # 列出可恢复 runs 并提示带名字重试。
+            from Ben.interface.terminal_text import terminal_attached
+
+            if args.non_interactive or not terminal_attached():
+                parser.error(resume_run_list_message("--resume needs a run name."))
+            args.resume_picker = True
         try:
             load_resume_state(args)
         except ResumeError as exc:
             parser.error(str(exc))
         return args
+
+    if args.workspace_file:
+        from Ben.interface.targets import resolve_workspace_files
+
+        try:
+            args.workspace_files = resolve_workspace_files(args.workspace_file)
+        except ValueError as e:
+            parser.error(str(e))
 
     # 合并位置参数与 -t/--target/--target-list，得到统一的目标字符串列表。
     targets: list[str] = []
@@ -167,6 +252,13 @@ def parse_args() -> argparse.Namespace:
             args.targets_info = build_targets_info(targets)
         except ValueError as e:
             parser.error(str(e))
+    else:
+        # 交互式且未给目标：进入 TUI 起始页，由用户在界面里填写目标或指令
+        # （对齐 strix）。headless 保留原有“回退白名单首项”行为。
+        from Ben.interface.terminal_text import terminal_attached
+
+        if not args.non_interactive and terminal_attached():
+            args.needs_setup = True
 
     return args
 

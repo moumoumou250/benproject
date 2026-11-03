@@ -45,12 +45,12 @@ import contextlib
 import io
 import json
 import logging
-from typing import TYPE_CHECKING, Any
 import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from agents import RunConfig
@@ -61,6 +61,7 @@ from agents.items import (
     ToolCallItem,
     ToolCallOutputItem,
 )
+
 from Ben.agents.factory import build_agent, make_child_factory
 from Ben.agents.prompt import build_system_prompt_context
 from Ben.config import Settings, configure_sdk_model_defaults
@@ -72,13 +73,13 @@ from Ben.config.models import (
 from Ben.core.agents import AgentCoordinator
 from Ben.core.execution import respawn_subagents, run_agent_loop
 from Ben.core.execution import spawn_child_agent as start_child_agent
-from Ben.core.paths import runtime_state_dir
 from Ben.core.hooks import (
     SUBAGENT_TURN_LIMITS_KEY,
     BudgetExceededError,
     ReportUsageHooks,
 )
 from Ben.core.inputs import build_root_task, build_scan_targets, make_model_settings
+from Ben.core.paths import runtime_state_dir
 from Ben.core.sessions import open_agent_session
 from Ben.interface.targets import HOST_GATEWAY_HOSTNAME, is_whitebox_scan
 from Ben.llm import request_log
@@ -96,7 +97,7 @@ logger = logging.getLogger(__name__)
 _MCP_PROMPT_WARMUP_TIMEOUT_SECONDS = 30.0
 
 
-def _mcp_roster_payload(registry: "McpRegistry") -> list[dict[str, Any]]:
+def _mcp_roster_payload(registry: McpRegistry) -> list[dict[str, Any]]:
     """本次运行的 MCP 花名册，非机密生命周期状态字典（对齐 strix）。"""
     return [
         {
@@ -110,7 +111,7 @@ def _mcp_roster_payload(registry: "McpRegistry") -> list[dict[str, Any]]:
     ]
 
 
-def _mcp_prompt_roster(registry: "McpRegistry") -> list[dict[str, Any]]:
+def _mcp_prompt_roster(registry: McpRegistry) -> list[dict[str, Any]]:
     """渲染进 agent prompt 的 MCP 花名册（仅 catalog_ready 才带 tool_count）。"""
     return [
         {
@@ -419,7 +420,9 @@ def _extract_tool_invocations(items: list[RunItem]) -> list[ToolInvocation]:
                     # 对象格式（responses API）
                     output_attr = getattr(raw, "output", None)
                     if output_attr:
-                        output_text = output_attr if isinstance(output_attr, str) else str(output_attr)
+                        output_text = (
+                            output_attr if isinstance(output_attr, str) else str(output_attr)
+                        )
                     call_id = getattr(raw, "call_id", None) or getattr(raw, "id", None) or ""
 
             # 尝试通过 call_id 匹配
@@ -432,7 +435,9 @@ def _extract_tool_invocations(items: list[RunItem]) -> list[ToolInvocation]:
                         inv.output = output_text
                         break
                 else:
-                    invocations.append(ToolInvocation(name="unknown", arguments="", output=output_text))
+                    invocations.append(
+                        ToolInvocation(name="unknown", arguments="", output=output_text)
+                    )
 
     return invocations
 
@@ -450,7 +455,9 @@ def _extract_final_text(items: list[RunItem]) -> str:
                         texts.append(content)
                     elif isinstance(content, list):
                         for part in content:
-                            text_val = getattr(part, "text", None) if hasattr(part, "text") else None
+                            text_val = (
+                                getattr(part, "text", None) if hasattr(part, "text") else None
+                            )
                             if text_val:
                                 texts.append(text_val)
                             elif isinstance(part, str):
@@ -485,6 +492,14 @@ class AgentRunner:
         interactive: bool = False,
         resume_run_name: str | None = None,
         resume_instruction: str | None = None,
+        max_turns: int | None = None,
+        max_budget_usd: float | None = None,
+        run_name: str | None = None,
+        workspace_files: list[dict[str, Any]] | None = None,
+        event_sink_extra: Any = None,
+        mcp_status_sink: Any = None,
+        coordinator: AgentCoordinator | None = None,
+        report_state: Any = None,
     ) -> None:
         self.settings = settings
         # 白盒源码挂载（session_manager.build_bind_mounts 的输入）；
@@ -507,6 +522,24 @@ class AgentRunner:
         # resume 时用户新给的 --instruction，经 coordinator.send 注入 root
         # 会话（对齐 strix runner 的 resume_instruction 注入）。
         self.resume_instruction = resume_instruction
+        # CLI --max-turns / --max-budget 覆盖（None 用 settings 默认）。
+        self.max_turns = max_turns
+        self.max_budget_usd = max_budget_usd
+        # 预生成的 run 名称（TUI/Viewer 需在启动前拿到 run 目录）。
+        self.run_name = run_name
+        # --workspace-file 注入的只读文件（session_manager extra_files）。
+        self.workspace_files = workspace_files or []
+        # TUI 接入点：额外事件消费者（live view）与 MCP 连接状态消费者。
+        self.event_sink_extra = event_sink_extra
+        self.mcp_status_sink = mcp_status_sink
+        # TUI 复用同一份 coordinator/report_state，保证界面与执行器看到同一状态。
+        self._coordinator_override = coordinator
+        self._report_state_override = report_state
+        # 运行期回填，供 TUI/Viewer 直接读取。
+        self.coordinator: AgentCoordinator | None = None
+        self.report_state: Any = None
+        self.root_id: str | None = None
+        self.run_name_resolved: str | None = None
 
     def run(self, target: str | None = None) -> AgentRunResult:
         """同步入口：执行完整 Agent 任务。
@@ -520,7 +553,7 @@ class AgentRunner:
     # 流式事件日志（event_sink：root 与 child 共用）
     # ------------------------------------------------------------------
 
-    def _make_event_sink(self, max_turns: int) -> "tuple[callable, dict[str, int]]":
+    def _make_event_sink(self, max_turns: int) -> tuple[callable, dict[str, int]]:
         """按 agent 统计轮次的流式日志 sink（对齐 strix 的 event_sink 注入点）。"""
         turn_counts: dict[str, int] = {}
         prev_item_type: dict[str, str | None] = {}
@@ -632,7 +665,9 @@ class AgentRunner:
             root_id = None  # restore 后从快照的 parent=None 记录找回
         else:
             root_id = uuid.uuid4().hex[:8]
-            run_name = f"ben_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{root_id}"
+            run_name = self.run_name or (
+                f"ben_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{root_id}"
+            )
 
         # 报告状态（对齐 strix run_scan）：finish_scan / agent_finish /
         # coverage / SARIF 都经模块级 ReportState 取扫描产物；缺了它这些写入
@@ -640,7 +675,7 @@ class AgentRunner:
         # resume 时 hydrate_from_run_dir 恢复 run.json 与已归档漏洞（fresh 幂等）。
         from Ben.report import ReportState, set_global_report_state
 
-        report_state = ReportState(run_name=run_name)
+        report_state = self._report_state_override or ReportState(run_name=run_name)
         report_state.hydrate_from_run_dir()
         set_global_report_state(report_state)
         run_dir = report_state.get_run_dir()
@@ -655,7 +690,7 @@ class AgentRunner:
             "resume" if is_resume else "fresh",
         )
 
-        coordinator = AgentCoordinator()
+        coordinator = self._coordinator_override or AgentCoordinator()
         coordinator.set_snapshot_path(agents_path)
         coordinator.root_finish_tool = "finish_scan"
 
@@ -702,6 +737,11 @@ class AgentRunner:
                 root_id,
             )
 
+        self.run_name_resolved = run_name
+        self.report_state = report_state
+        self.coordinator = coordinator
+        self.root_id = root_id
+
         # === 阶段 4: 创建 SDK Docker Sandbox（含 Caido 代理 sidecar） ===
         # 对齐 strix runtime/session_manager.create_or_reuse：backend 注册表
         # （BEN_RUNTIME_BACKEND）选实现，defer=True 时容器在后台并行启动，
@@ -716,6 +756,7 @@ class AgentRunner:
             scan_id,
             image=settings.executor_image,
             local_sources=self.local_sources,
+            extra_files=self.workspace_files,
             status_sink=lambda phase: logger.info("[sandbox] %s", phase),
             defer=True,
         )
@@ -726,7 +767,7 @@ class AgentRunner:
         logger.info("阶段 5/6: 构建 Agent（Ben.agents.factory，root 挂 finish_scan）")
         logger.info("=" * 60)
 
-        max_turns = settings.max_agent_turns
+        max_turns = self.max_turns or settings.max_agent_turns
         stopped_reason = "未知"
         final_text = ""
         invocations: list[ToolInvocation] = []
@@ -790,8 +831,11 @@ class AgentRunner:
                 prompt_context["mcp_connections"] = _mcp_prompt_roster(mcp_registry)
 
                 def _emit_mcp_status() -> None:
+                    roster = _mcp_roster_payload(mcp_registry)
                     prompt_context["mcp_connections"] = _mcp_prompt_roster(mcp_registry)
-                    _persist_mcp_status(_mcp_roster_payload(mcp_registry))
+                    _persist_mcp_status(roster)
+                    if self.mcp_status_sink is not None:
+                        self.mcp_status_sink(roster)
 
                 mcp_registry.set_status_sink(_emit_mcp_status)
                 _emit_mcp_status()
@@ -847,6 +891,7 @@ class AgentRunner:
                 hooks = ReportUsageHooks(
                     model=resolved_model,
                     max_turns=max_turns,
+                    max_budget_usd=self.max_budget_usd,
                     interactive=self.interactive,
                     record_tool_timings=settings.telemetry.run_record_timings,
                 )
@@ -857,7 +902,7 @@ class AgentRunner:
                     is_root=True,
                     sandbox_session=sandbox_session,
                     allowed_targets=settings.allowed_targets,
-                    scan_mode="blackbox",
+                    scan_mode=self.scan_mode,
                     is_whitebox=is_whitebox,
                     is_diff_scoped=is_diff_scoped,
                     interactive=self.interactive,
@@ -887,7 +932,7 @@ class AgentRunner:
                 child_agent_builder = make_child_factory(
                     sandbox_session=sandbox_session,
                     allowed_targets=settings.allowed_targets,
-                    scan_mode="blackbox",
+                    scan_mode=self.scan_mode,
                     is_whitebox=is_whitebox,
                     is_diff_scoped=is_diff_scoped,
                     interactive=self.interactive,
@@ -946,6 +991,12 @@ class AgentRunner:
                 logger.info("=" * 60)
 
                 event_sink, turn_counts = self._make_event_sink(max_turns)
+                if self.event_sink_extra is not None:
+                    inner_sink = event_sink
+
+                    def event_sink(agent_id: str, event: Any) -> None:  # noqa: ANN001
+                        self.event_sink_extra(agent_id, event)
+                        inner_sink(agent_id, event)
 
                 # resume：拉起快照里未终结的子 agent（对齐 strix runner
                 # L609-622）；root 自身由下面的 run_agent_loop 驱动。
@@ -1142,7 +1193,9 @@ class AgentRunner:
             if report_state.final_scan_result is None:
                 status = "failed" if run_error is not None else "stopped"
                 report_state.cleanup(status=status)
-                logger.info("报告状态已收尾：status=%s，产物目录=%s", status, report_state.get_run_dir())
+                logger.info(
+                    "报告状态已收尾：status=%s，产物目录=%s", status, report_state.get_run_dir()
+                )
             else:
                 logger.info(
                     "报告状态已完成：产物目录=%s（%d 份漏洞报告）",

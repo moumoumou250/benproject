@@ -26,7 +26,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
+from collections.abc import Sequence
 
 # 让项目根可导入，以便按 Ben.runtime.docker_connection 绝对导入（无论从哪个 CWD 运行）。
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -325,7 +326,7 @@ class DockerExecutor:
         except Exception as exc:  # noqa: BLE001
             logger.warning("删除网络 %s 失败：%s", self.network, exc)
 
-    def __enter__(self) -> "DockerExecutor":
+    def __enter__(self) -> DockerExecutor:
         self.ensure_container()
         return self
 

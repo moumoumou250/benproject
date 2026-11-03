@@ -1,4 +1,6 @@
-"""目标解析与 diff-scope 工具集（对齐 strix 的 interface/utils.py + scan_setup.build_targets_info）。
+"""目标解析与 diff-scope 工具集。
+
+对齐 strix 的 interface/utils.py + scan_setup.build_targets_info。
 
 职责：
   - infer_target_type          → URL/git repo/本地目录/IP/域名 分类
@@ -9,7 +11,10 @@
   - check_mountable_dir        → 拒绝把系统目录/凭据目录挂进沙箱
   - rewrite_localhost_targets  → localhost 目标改写为 host-gateway（容器可达宿主机）
 
-跳过（Ben 第一版不支持）：api_spec/postman 目标、workspace-file 机制、telemetry。
+职责还包括：
+  - api_spec/postman 目标解析与 staging（spec 文件只读进 /workspace/api-specs）
+  - workspace-file 解析（PATH[:DEST] → extra_files）
+  - generate_run_name（目标派生 run 名）
 """
 
 from __future__ import annotations
@@ -19,15 +24,26 @@ import json
 import logging
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import requests
+
+from Ben.utils.api_spec import (
+    SpecParseError,
+    detect_spec_format,
+    fetch_postman_collection,
+    fetch_postman_environment,
+    load_spec,
+    spec_base_urls,
+    spec_title,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -53,10 +69,10 @@ def _is_http_git_repo(url: str) -> bool:
 
 
 def infer_target_type(target: str) -> tuple[str, dict[str, str]]:  # noqa: PLR0911
-    """把单个目标字符串分类为 repository/local_code/web_application/ip_address。
+    """把单个目标字符串分类为 repository/local_code/web_application/ip_address/api_spec。
 
-    对齐 strix infer_target_type；跳过 postman/api_spec 分支（Ben 无对应模块），
-    存在的非目录路径（如 spec 文件）按普通错误处理。
+    对齐 strix infer_target_type：支持 OpenAPI/Swagger 规格文件与
+    ``postman://<collection-uid>[?env=<environment-uid>]``。
     """
     if not target or not isinstance(target, str):
         raise ValueError("Target must be a non-empty string")
@@ -71,9 +87,22 @@ def infer_target_type(target: str) -> tuple[str, dict[str, str]]:  # noqa: PLR09
 
     parsed = urlparse(target)
     if parsed.scheme == "postman":
-        raise ValueError(
-            f"Postman collection targets are not supported: '{target}'"
-        )
+        collection_uid = f"{parsed.netloc}{parsed.path}".strip("/")
+        if not collection_uid:
+            raise ValueError(
+                f"Missing Postman collection id in '{target}' (expected postman://<collection-uid>)"
+            )
+        details = {
+            "target_spec": target,
+            "spec_format": "postman",
+            "source": "postman_api",
+            "collection_uid": collection_uid,
+        }
+        query = parse_qs(parsed.query)
+        env_uid = (query.get("env") or query.get("environment") or [""])[0].strip()
+        if env_uid:
+            details["environment_uid"] = env_uid
+        return "api_spec", details
 
     if parsed.scheme in ("http", "https"):
         if parsed.username or parsed.password:
@@ -100,7 +129,12 @@ def infer_target_type(target: str) -> tuple[str, dict[str, str]]:  # noqa: PLR09
             if path.is_dir():
                 check_mountable_dir(path)
                 return "local_code", {"target_path": str(path.resolve())}
-            # Ben 第一版不支持 api_spec 目标：存在的文件按普通错误处理。
+            spec_format = detect_spec_format(path)
+            if spec_format is not None:
+                return "api_spec", {
+                    "target_spec": str(path.resolve()),
+                    "spec_format": spec_format,
+                }
             raise ValueError(f"Path exists but is not a directory: {target}")
     except (OSError, RuntimeError) as e:
         raise ValueError(f"Invalid path: {target} - {e!s}") from e
@@ -127,6 +161,9 @@ def infer_target_type(target: str) -> tuple[str, dict[str, str]]:  # noqa: PLR09
         "- A valid URL (http:// or https://)\n"
         "- A Git repository URL (https://host/org/repo or git@host:org/repo.git)\n"
         "- A local directory path\n"
+        "- An API spec file (OpenAPI/Swagger .json/.yaml or a Postman collection)\n"
+        "- A Postman collection by id (postman://<collection-uid>[?env=<environment-uid>], "
+        "needs POSTMAN_API_KEY)\n"
         "- A domain name (e.g., example.com)\n"
         "- An IP address (e.g., 192.168.1.10)"
     )
@@ -156,6 +193,241 @@ def read_target_list_file(path_str: str) -> list[str]:
     if not targets:
         raise ValueError(f"Target list file '{path_str}' is empty.")
     return targets
+
+
+# ---------------------------------------------------------------------------
+# API spec 解析 / staging
+# ---------------------------------------------------------------------------
+
+#: API spec targets are copied into one workspace directory rather than mounted
+#: from wherever they happen to live on the host.
+API_SPEC_WORKSPACE_SUBDIR = "api-specs"
+
+
+def write_fetched_collection(collection: dict[str, Any], collection_uid: str) -> str:
+    """把 Postman API 拉取的 collection 落到本地临时文件。
+
+    之后 ``postman://`` 目标按普通 spec 文件继续处理，API key 不进入沙箱。
+    """
+    staging = Path(tempfile.gettempdir()) / "ben_api_specs" / "fetched"
+    staging.mkdir(parents=True, exist_ok=True)
+    path = staging / f"{sanitize_name(collection_uid)}.postman_collection.json"
+    path.write_text(json.dumps(collection, indent=2), encoding="utf-8")
+    return str(path)
+
+
+def _resolve_api_spec(target: str, details: dict[str, Any]) -> None:
+    """启动前读取 spec：坏输入尽早失败，并记录声明的 base URL 供授权。"""
+    try:
+        if details.get("source") == "postman_api":
+            from Ben.config.settings import load_settings
+
+            collection_uid = str(details["collection_uid"])
+            api_key = load_settings().integrations.postman_api_key or ""
+            raw = fetch_postman_collection(collection_uid, api_key)
+            environment_uid = str(details.get("environment_uid") or "")
+            extra_variables = (
+                fetch_postman_environment(environment_uid, api_key) if environment_uid else None
+            )
+            details["target_spec"] = write_fetched_collection(raw, collection_uid)
+        else:
+            raw = load_spec(str(details["target_spec"]))
+            extra_variables = None
+        base_urls = spec_base_urls(raw, extra_variables=extra_variables)
+    except SpecParseError as exc:
+        raise ValueError(f"Invalid API spec '{target}': {exc}") from None
+
+    details["spec_title"] = spec_title(raw)
+    details["base_urls"] = base_urls
+
+
+def stage_api_specs(targets_info: list[dict[str, Any]], run_name: str) -> list[dict[str, Any]]:
+    """把每个 api_spec 目标复制进单独目录，映射为 /workspace/api-specs。"""
+    specs = [t for t in targets_info if t.get("type") == "api_spec"]
+    if not specs:
+        return []
+
+    staging = Path(tempfile.gettempdir()) / "ben_api_specs" / run_name
+    staging.mkdir(parents=True, exist_ok=True)
+
+    used: set[str] = set()
+    for target in specs:
+        details = target["details"]
+        source = Path(str(details["target_spec"]))
+        name = source.name
+        stem, suffix = source.stem, source.suffix
+        count = 1
+        while name in used:
+            count += 1
+            name = f"{stem}-{count}{suffix}"
+        used.add(name)
+        shutil.copy2(source, staging / name)
+        details["workspace_path"] = f"/workspace/{API_SPEC_WORKSPACE_SUBDIR}/{name}"
+
+    return [
+        {
+            "source_path": str(staging),
+            "workspace_subdir": API_SPEC_WORKSPACE_SUBDIR,
+            "protect_metadata": False,
+        }
+    ]
+
+
+# ---------------------------------------------------------------------------
+# 运行名派生
+# ---------------------------------------------------------------------------
+
+
+def _slugify_for_run_name(text: str, max_length: int = 32) -> str:
+    text = text.lower().strip()
+    text = re.sub(r"[^a-z0-9]+", "-", text)
+    text = text.strip("-")
+    if len(text) > max_length:
+        text = text[:max_length].rstrip("-")
+    return text or "pentest"
+
+
+def _derive_target_label_for_run_name(targets_info: list[dict[str, Any]] | None) -> str:  # noqa: PLR0911
+    if not targets_info:
+        return "pentest"
+
+    first = targets_info[0]
+    target_type = first.get("type")
+    details = first.get("details", {}) or {}
+    original = first.get("original", "") or ""
+
+    if target_type == "web_application":
+        url = details.get("target_url", original)
+        try:
+            parsed = urlparse(url)
+            return str(parsed.netloc or parsed.path or url)
+        except Exception:
+            return str(url)
+
+    if target_type == "repository":
+        repo = details.get("target_repo", original)
+        parsed = urlparse(repo)
+        path = parsed.path or repo
+        name = path.rstrip("/").split("/")[-1] or path
+        if name.endswith(".git"):
+            name = name[:-4]
+        return str(name)
+
+    if target_type == "local_code":
+        path_str = details.get("target_path", original)
+        try:
+            return str(Path(path_str).name or path_str)
+        except Exception:
+            return str(path_str)
+
+    if target_type == "ip_address":
+        return str(details.get("target_ip", original) or original)
+
+    if target_type == "api_spec":
+        if details.get("source") == "postman_api":
+            return "postman-collection"
+        spec_path = details.get("target_spec", original)
+        try:
+            return str(Path(spec_path).stem or spec_path)
+        except Exception:
+            return str(spec_path)
+
+    return str(original or "pentest")
+
+
+def generate_run_name(targets_info: list[dict[str, Any]] | None = None) -> str:
+    base_label = _derive_target_label_for_run_name(targets_info)
+    slug = _slugify_for_run_name(base_label)
+    return f"{slug}_{secrets.token_hex(2)}"
+
+
+# ---------------------------------------------------------------------------
+# workspace-file（--workspace-file PATH[:DEST]）
+# ---------------------------------------------------------------------------
+
+
+def _split_workspace_spec(spec: str) -> tuple[str, str]:
+    """把 ``PATH[:DEST]`` 拆成 ``(path, dest)``；Windows 盘符的冒号不算分隔符。
+
+    ``C:\\a\\wordlist.txt:lists/w.txt`` 在 Windows 上有两个冒号，只有最后一个才是
+    分隔符。直接 ``rpartition(":")`` 会把盘符当路径、把目录串当 dest，导致
+    「C 不是已存在的文件」这类误报（上游同样有此缺陷，此处按平台修正）。
+    """
+    text = spec.strip()
+    # 盘符形式（C:\ 或 C:/）跳过前两个字符再找分隔冒号
+    has_drive_prefix = re.match(r"^[A-Za-z]:[\\/]", text) is not None
+    start = 2 if has_drive_prefix else 0
+    index = text.rfind(":")
+    if index > start:
+        dest = text[index + 1 :].strip()
+        if dest:
+            return text[:index].strip(), dest
+    return text, ""
+
+
+def _workspace_file_dest(spec: str, source: Path) -> str:
+    """返回 ``PATH[:DEST]`` 中声明的 workspace 相对路径。"""
+    _, dest = _split_workspace_spec(spec)
+    candidate = dest or source.name
+    if candidate.startswith("/") or Path(candidate).is_absolute():
+        if not candidate.startswith("/workspace/"):
+            raise ValueError(
+                f"'{spec}' must land inside the workspace: use a relative "
+                "destination or a path under /workspace"
+            )
+        candidate = candidate.removeprefix("/workspace/")
+    candidate = candidate.strip("/")
+    if not candidate:
+        raise ValueError(f"'{spec}' has an empty destination path")
+    if any(part in ("", ".", "..") for part in candidate.split("/")):
+        raise ValueError(f"'{spec}' has an invalid destination path: {candidate}")
+    if any(ord(char) < 0x20 or ord(char) == 0x7F for char in candidate):
+        raise ValueError(f"'{spec}' has a control character in its destination path")
+    return candidate
+
+
+def resolve_workspace_files(specs: list[str] | None) -> list[dict[str, str]]:
+    """校验 ``PATH[:DEST]``，返回 source/workspace_path 配对。"""
+    resolved: list[dict[str, str]] = []
+    seen: dict[str, str] = {}
+    for spec in specs or []:
+        source_text, _ = _split_workspace_spec(spec)
+        source = Path(source_text.strip()).expanduser()
+        if not source.is_file():
+            raise ValueError(f"'{source}' is not an existing file")
+        try:
+            with source.open("rb"):
+                pass
+        except OSError as error:
+            raise ValueError(f"Cannot read '{source}': {error}") from error
+        workspace_rel = _workspace_file_dest(spec, source)
+        if workspace_rel in seen:
+            raise ValueError(
+                f"Two workspace files target /workspace/{workspace_rel}: "
+                f"'{seen[workspace_rel]}' and '{source}'"
+            )
+        seen[workspace_rel] = str(source)
+        resolved.append(
+            {
+                "source_path": str(source.resolve()),
+                "workspace_path": f"/workspace/{workspace_rel}",
+            }
+        )
+    return resolved
+
+
+def read_workspace_files(workspace_files: list[dict[str, str]] | None) -> list[dict[str, Any]]:
+    """读取 workspace-file 内容为 session_manager 的 ``extra_files`` 条目。"""
+    entries: list[dict[str, Any]] = []
+    for workspace_file in workspace_files or []:
+        source = Path(workspace_file["source_path"])
+        entries.append(
+            {
+                "workspace_path": workspace_file["workspace_path"],
+                "content": source.read_bytes(),
+            }
+        )
+    return entries
 
 
 # ---------------------------------------------------------------------------
@@ -493,6 +765,9 @@ def build_targets_info(targets: list[str]) -> list[dict[str, Any]]:
             display_target = target_dict.get("target_path", target)
         else:
             display_target = target
+
+        if target_type == "api_spec":
+            _resolve_api_spec(target, target_dict)
 
         targets_info.append(
             {"type": target_type, "details": target_dict, "original": display_target}

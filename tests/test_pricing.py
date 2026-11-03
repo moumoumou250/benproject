@@ -79,9 +79,10 @@ def _pick_bare_name(*, agree: bool) -> str:
     for bare, keys in sorted(_bare_name_price_groups().items()):
         if "/" in bare or len(keys) != len({key.split("/")[0] for key in keys}):
             continue
-        if len({_price_of(key) for key in keys}) == (1 if agree else 2):
-            if all(litellm.model_cost[key].get("mode", "chat") == "chat" for key in keys):
-                return bare
+        if len({_price_of(key) for key in keys}) == (1 if agree else 2) and all(
+            litellm.model_cost[key].get("mode", "chat") == "chat" for key in keys
+        ):
+            return bare
     pytest.skip("installed LiteLLM cost map has no suitable bare model name")
 
 

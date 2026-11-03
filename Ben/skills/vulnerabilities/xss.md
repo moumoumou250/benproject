@@ -69,7 +69,7 @@ Test base or form target changes, external requests, deceptive content, DOM clob
 
 Test normalization only when the target performs it. NFKC can fold fullwidth delimiters such as `＜` and `＞` into HTML syntax.
 
-Map validation, normalization, sanitization, encoding, and parsing in order. Start with the harmless canary `＜h1 id="strix-nfkc"＞marker＜/h1＞`.
+Map validation, normalization, sanitization, encoding, and parsing in order. Start with the harmless canary `＜h1 id="ben-nfkc"＞marker＜/h1＞`.
 
 Report a bypass only when normalization creates dangerous syntax that reaches an unprotected sink. Load `semantic_confusion` when components interpret the value differently.
 

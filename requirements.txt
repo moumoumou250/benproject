@@ -41,3 +41,14 @@ caido-sdk-client>=0.2.0,<0.3
 
 # CVSS 3.1 向量评分计算（reporting 工具的漏洞定级）
 cvss>=3.2
+
+# 本地 Viewer：PDF 报告导出（Markdown 解析 + PDF 生成/加密）
+markdown-it-py>=4.2.0,<5
+pypdf>=6.14.0,<7
+reportlab>=5.0.0,<6
+
+# 终端渲染：Rich 面板/Live 实时视图（Ben.interface.cli / stats / resume_picker）
+rich>=13.9,<14
+
+# 代码高亮：报告与 Viewer 的代码块着色（Ben.report.writer）
+pygments>=2.18,<3

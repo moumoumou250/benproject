@@ -19,26 +19,111 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import uuid
-from typing import Any
+from typing import Any, cast
 
+from agents.sandbox.errors import ExposedPortUnavailableError
 from agents.sandbox.manifest import Manifest
 from agents.sandbox.sandboxes.docker import (
     DockerSandboxClient,
+    DockerSandboxSession,
     _build_docker_volume_mounts,
     _docker_port_key,
     _manifest_requires_fuse,
     _manifest_requires_sys_admin,
 )
+from agents.sandbox.session.sandbox_session import SandboxSession
+from agents.sandbox.types import ExposedPortEndpoint
+from docker import errors as docker_errors  # type: ignore[import-untyped, unused-ignore]
 from docker.models.containers import Container  # type: ignore[import-untyped, unused-ignore]
 from docker.types import LogConfig  # type: ignore[import-untyped, unused-ignore]
 from docker.types import Mount as DockerSDKMount  # type: ignore[import-untyped, unused-ignore]
 from docker.utils import parse_repository_tag  # type: ignore[import-untyped, unused-ignore]
 
-
 logger = logging.getLogger(__name__)
+
+
+_SANDBOX_NETWORK_ENV = "BEN_DOCKER_SANDBOX_NETWORK"
+_SANDBOX_DEVICES_ENV = "BEN_DOCKER_SANDBOX_DEVICES"
+
+
+def _sandbox_network() -> str | None:
+    value = os.environ.get(_SANDBOX_NETWORK_ENV, "").strip()
+    return value or None
+
+
+def _apply_sandbox_network(create_kwargs: dict[str, Any]) -> None:
+    """Join the sandbox to a dedicated user-defined network.
+
+    On a non-default network the DNS resolver, IPAM, and isolation policy are
+    ours, which is what makes sandbox traffic separable from host traffic.
+    Published ports are dropped: they would join the default bridge and publish
+    on 0.0.0.0, contradicting the isolation this network exists to provide.
+    """
+    network = _sandbox_network()
+    if network:
+        create_kwargs["network"] = network
+        create_kwargs.pop("ports", None)
+
+
+def _sandbox_devices() -> list[str]:
+    raw = os.environ.get(_SANDBOX_DEVICES_ENV, "")
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _apply_sandbox_devices(create_kwargs: dict[str, Any]) -> None:
+    """Pass the host devices listed in ``BEN_DOCKER_SANDBOX_DEVICES`` through.
+
+    Comma-separated device paths, each mapped to the same path in the container
+    with ``rwm`` access. A tunnel brought up inside the sandbox (OpenVPN,
+    Tailscale) needs ``/dev/net/tun``: Docker's default device cgroup denies it
+    even with ``NET_ADMIN``. Unset means no extra devices.
+    """
+    devices = _sandbox_devices()
+    if not devices:
+        return
+    existing = [str(item) for item in (create_kwargs.get("devices") or [])]
+    for path in devices:
+        spec = f"{path}:{path}:rwm"
+        if spec not in existing and path not in existing:
+            existing.append(spec)
+    create_kwargs["devices"] = existing
+
+
+def _apply_resource_limits(create_kwargs: dict[str, Any]) -> None:
+    """Apply optional cgroup caps (mem/shm/cpu/pids) from the environment."""
+    mem_limit = os.environ.get("BEN_SANDBOX_MEM_LIMIT", "").strip()
+    if mem_limit:
+        create_kwargs["mem_limit"] = mem_limit
+    shm_size = os.environ.get("BEN_SANDBOX_SHM_SIZE", "").strip()
+    if shm_size:
+        create_kwargs["shm_size"] = shm_size
+    cpus = os.environ.get("BEN_SANDBOX_CPUS", "").strip()
+    if cpus:
+        with contextlib.suppress(ValueError, OverflowError):
+            nano_cpus = int(float(cpus) * 1_000_000_000)
+            if 0 < nano_cpus <= 2**63 - 1:
+                create_kwargs["nano_cpus"] = nano_cpus
+    pids_limit = os.environ.get("BEN_SANDBOX_PIDS_LIMIT", "").strip()
+    if pids_limit:
+        with contextlib.suppress(ValueError):
+            create_kwargs["pids_limit"] = int(pids_limit)
+
+
+def _apply_run_labels(create_kwargs: dict[str, Any]) -> None:
+    run_id = os.getenv("BEN_RUN_ID")
+    if not run_id:
+        return
+    labels = create_kwargs.setdefault("labels", {})
+    if not isinstance(labels, dict):
+        return
+    labels["ben-run-id"] = run_id
+    run_type = os.getenv("BEN_RUN_TYPE")
+    if run_type:
+        labels["ben-run-type"] = run_type
 
 
 def _sandbox_security_kwargs(manifest: Manifest | None) -> dict[str, Any]:
@@ -74,6 +159,51 @@ def _apply_log_limits(create_kwargs: dict[str, Any]) -> None:
         type=LogConfig.types.JSON,
         config={"max-size": max_size, "max-file": max_file},
     )
+
+
+class BenDockerSandboxSession(DockerSandboxSession):
+    """Resolve exposed ports on the sandbox network instead of 127.0.0.1.
+
+    With ``BEN_DOCKER_SANDBOX_NETWORK`` the agent must reach an exposed port at
+    the container's address on that network; the default published-port
+    mapping is deliberately not created.
+    """
+
+    sandbox_network: str = ""
+
+    async def _resolve_exposed_port(self, port: int) -> ExposedPortEndpoint:
+        try:
+            self._container.reload()
+        except docker_errors.APIError as e:
+            raise ExposedPortUnavailableError(
+                port=port,
+                exposed_ports=self.state.exposed_ports,
+                reason="backend_unavailable",
+                context={
+                    "backend": "docker",
+                    "detail": "container_reload_failed",
+                    "network": self.sandbox_network,
+                },
+                cause=e,
+            ) from e
+
+        attrs = getattr(self._container, "attrs", {}) or {}
+        networks = attrs.get("NetworkSettings", {}).get("Networks", {})
+        endpoint = networks.get(self.sandbox_network) or {}
+        ip = endpoint.get("IPAddress") or endpoint.get("GlobalIPv6Address")
+        if not isinstance(ip, str) or not ip:
+            raise ExposedPortUnavailableError(
+                port=port,
+                exposed_ports=self.state.exposed_ports,
+                reason="backend_unavailable",
+                context={
+                    "backend": "docker",
+                    "detail": "container_not_on_network",
+                    "network": self.sandbox_network,
+                },
+            )
+        host = f"[{ip}]" if ":" in ip else ip
+        return ExposedPortEndpoint(host=host, port=port, tls=False)
 
 
 class BenDockerSandboxClient(DockerSandboxClient):
@@ -133,7 +263,11 @@ class BenDockerSandboxClient(DockerSandboxClient):
         extra_hosts = create_kwargs.setdefault("extra_hosts", {})
         extra_hosts["host.docker.internal"] = "host-gateway"
 
+        _apply_sandbox_network(create_kwargs)
+        _apply_sandbox_devices(create_kwargs)
+        _apply_resource_limits(create_kwargs)
         _apply_log_limits(create_kwargs)
+        _apply_run_labels(create_kwargs)
 
         # Ben injection：本地源码树 bind-mount，浅的排前面，嵌套的后挂载
         # 使其覆盖在父树之上。
@@ -163,3 +297,13 @@ class BenDockerSandboxClient(DockerSandboxClient):
             image,
         )
         return container
+
+    async def create(self, **kwargs: Any) -> SandboxSession:
+        session = await super().create(**kwargs)
+        network = _sandbox_network()
+        inner = session._inner  # noqa: SLF001
+        if network and isinstance(inner, DockerSandboxSession):
+            inner.__class__ = BenDockerSandboxSession
+            cast("BenDockerSandboxSession", inner).sandbox_network = network
+        return session
+

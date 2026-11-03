@@ -24,6 +24,7 @@ All knobs are env-tunable:
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import time
@@ -171,10 +172,9 @@ def connect_docker(
         except _RETRYABLE as exc:
             last_exc = exc
             if client is not None:
-                try:
+                # teardown 不得掩盖真实错误
+                with contextlib.suppress(Exception):
                     client.close()
-                except Exception:  # noqa: BLE001 - teardown must not mask the real error
-                    pass
             if attempt == attempts:
                 break
             wait = delay * (2 ** (attempt - 1))
@@ -243,10 +243,8 @@ def docker_healthcheck(client: Any | None = None) -> dict[str, Any]:
         }
     finally:
         if own_client and client is not None:
-            try:
+            with contextlib.suppress(Exception):
                 client.close()
-            except Exception:  # noqa: BLE001
-                pass
 
 
 def root_cause(exc: BaseException) -> BaseException:

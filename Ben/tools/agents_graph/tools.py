@@ -490,7 +490,7 @@ async def wait_for_agents(  # noqa: PLR0911
         default=str,
     )
 
-# 
+#
 @function_tool(timeout=120)
 async def create_agent(
     ctx: RunContextWrapper,

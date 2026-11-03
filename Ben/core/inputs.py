@@ -21,7 +21,6 @@ from Ben.config.models import (
 )
 from Ben.core.sessions import scrub_images_from_items
 
-
 if TYPE_CHECKING:
     from Ben.config.settings import ReasoningEffort
 
@@ -52,6 +51,31 @@ def _render_diff_scope(diff_scope: dict[str, Any]) -> list[str]:
         if deleted:
             parts.append(f"- {label}: {deleted} deleted file(s) are context-only")
     return parts
+
+
+def _render_api_spec(details: dict[str, Any]) -> list[str]:
+    """Render an API spec target as root-task lines.
+
+    The spec itself is in the workspace, so the task points at the file and lets
+    the agent read the contract rather than restating a parsed summary of it.
+    """
+    title = details.get("spec_title") or details.get("target_spec", "API")
+    workspace_path = details.get("workspace_path", "")
+    lines = [
+        f"- {title} ({details.get('spec_format', 'api')} specification"
+        + (f", available at: {workspace_path}" if workspace_path else "")
+        + ")"
+    ]
+    if base_urls := details.get("base_urls") or []:
+        lines.append("  - Base URL(s): " + ", ".join(base_urls))
+    lines.append(
+        "  - Read the specification and test every operation it declares, using "
+        "its declared parameters, request bodies, and auth. Endpoints in the "
+        "specification are in scope even when nothing links to them. Load the "
+        "`api_spec_testing` skill for the methodology, or spawn a specialist "
+        "with it."
+    )
+    return lines
 
 
 def _render_workspace_files(scan_config: dict[str, Any]) -> list[str]:
@@ -89,6 +113,7 @@ def build_root_task(scan_config: dict[str, Any]) -> str:
         "Local Codebases": [],
         "URLs": [],
         "IP Addresses": [],
+        "API Specifications": [],
     }
 
     for target in targets:
@@ -114,6 +139,8 @@ def build_root_task(scan_config: dict[str, Any]) -> str:
             sections["URLs"].append(f"- {details.get('target_url', '')}")
         elif ttype == "ip_address":
             sections["IP Addresses"].append(f"- {details.get('target_ip', '')}")
+        elif ttype == "api_spec":
+            sections["API Specifications"].extend(_render_api_spec(details))
 
     parts: list[str] = []
     for label, items in sections.items():
@@ -168,6 +195,7 @@ def build_scope_context(scan_config: dict[str, Any]) -> dict[str, Any]:
         "local_code": "target_path",
         "web_application": "target_url",
         "ip_address": "target_ip",
+        "api_spec": "target_spec",
     }
     for target in scan_config.get("targets", []) or []:
         ttype = target.get("type", "unknown")
@@ -180,6 +208,14 @@ def build_scope_context(scan_config: dict[str, Any]) -> dict[str, Any]:
         authorized.append(
             {"type": ttype, "value": value, "workspace_path": workspace_path},
         )
+
+        # An API spec authorizes the hosts it declares as in-scope web targets
+        # so the agent can exercise every endpoint without expanding scope.
+        if ttype == "api_spec":
+            authorized.extend(
+                {"type": "web_application", "value": base_url, "workspace_path": ""}
+                for base_url in details.get("base_urls") or []
+            )
 
     return {
         "scope_source": "user_scan_config",

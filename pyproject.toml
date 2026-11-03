@@ -1,6 +1,110 @@
-# 项目工具配置（pytest 配置仍以 pytest.ini 为准）。
-# 仅用于让 ruff 知道目标 Python 版本：BaseExceptionGroup / ExceptionGroup
-# 是 3.11+ 内建名，否则会被 F821 误报。
+# BenProject —— 授权范围内的漏洞测试 Agent（openai-agents SDK + Docker 沙箱）
+#
+# 本文件同时承担三件事：
+#   1) 打包元数据（python -m build / pip install .）；
+#   2) ruff 目标版本（BaseExceptionGroup 等 3.11+ 内建名不被误报）；
+#   3) 日常安装仍以 requirements.txt 为准（见 README「安装」一节）。
+
+[project]
+name = "ben-agent"
+# 版本号跟随所对齐的上游基线：Ben 当前对齐 strix 1.7.0。
+version = "1.7.0"
+description = "授权范围内的漏洞测试 Agent（最小 Agent 框架 + Docker 沙箱执行）"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.12"
+keywords = ["security", "pentest", "agent", "llm", "docker"]
+dependencies = [
+  "openai-agents[litellm]>=0.19.0,<0.20",
+  "openai>=2.45.0,<3",
+  "litellm>=1.101.0",
+  "pydantic>=2.11.3",
+  "pydantic-settings>=2.13.0",
+  "docker==7.1.0",
+  "python-dotenv==1.2.2",
+  "jsonschema==4.26.0",
+  "mcp==1.28.1",
+  "Jinja2==3.1.6",
+  "PyYAML==6.0.3",
+  "requests==2.34.2",
+  "caido-sdk-client>=0.2.0,<0.3",
+  "cvss>=3.2",
+  "markdown-it-py>=4.2.0,<5",
+  "pypdf>=6.14.0,<7",
+  "reportlab>=5.0.0,<6",
+  "rich>=13.9,<14",
+  "pygments>=2.18,<3",
+]
+
+[project.scripts]
+ben = "Ben.interface.main:main"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3",
+  "pytest-asyncio>=0.24",
+  "ruff>=0.11.13",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["Ben"]
+# Vite 前端源码（Ben/interface/viewer/frontend/）与其 node_modules 不随包分发；
+# 预构建产物在 Ben/interface/viewer/static/ 会被自动收进 wheel。
+exclude = [
+  "Ben/interface/viewer/frontend",
+  "Ben/interface/viewer/frontend/**",
+  # Go TUI 源码不随包分发，编译产物以 Ben/bin/ben-tui 强制包含。
+  "Ben/interface/tui/cmd/**",
+  "Ben/interface/tui/internal/**",
+  "Ben/interface/tui/go.mod",
+  "Ben/interface/tui/go.sum",
+  "Ben/bin/**",
+]
+
+[tool.hatch.build.targets.wheel.hooks.custom]
+path = "scripts/tui_sidecar_hook.py"
+
 [tool.ruff]
 target-version = "py312"
 line-length = 100
+extend-exclude = [
+  ".git",
+  ".venv",
+  ".ruff_cache",
+  ".pytest_cache",
+  "Ben/interface/tui",
+  "Ben/interface/viewer/frontend",
+  "Ben/interface/viewer/static",
+  "reports",
+  "strix_runs",
+  "mcp_servers",
+]
+
+[tool.ruff.lint]
+# 刻意收窄的规则集：Ben 既有代码沿用上游风格（大量 BLE001/ARG001/TC003 等
+# 显式 noqa），启用全部上游规则会产生 3,000+ 条历史欠账，反而让 lint 失去意义。
+# 想扩展时按文件增量放宽，不要一次性全开。
+select = ["E", "W", "F", "UP", "B", "C4", "SIM", "RUF", "PIE", "RET"]
+ignore = [
+  "E501",    # 行长由 formatter 决定
+  "COM812",  # 尾逗号交给 formatter
+  "ISC001",  # 隐式字符串拼接交给 formatter
+  "RUF001",  # 中文全角标点
+  "RUF002",
+  "RUF003",
+  "RUF012",
+  "RUF100",  # 既有 noqa 指向未启用的规则，不视为错误
+]
+
+[tool.ruff.lint.per-file-ignores]
+# 工具函数保留未使用参数以对齐 SDK 的注册签名
+"Ben/tools/**" = ["ARG001"]
+# 入口保留宽异常兜底（终端渲染/子进程失败不应中断扫描）
+"Ben/interface/main.py" = ["BLE001"]
+"Ben/interface/cli.py" = ["BLE001"]
+"tests/**" = ["S101", "ARG001"]
+"scripts/**" = ["INP001"]

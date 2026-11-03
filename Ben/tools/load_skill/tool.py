@@ -22,8 +22,7 @@ MAX_SKILLS_PER_CALL = 5
 
 def _runtime_from_ctx(ctx: RunContextWrapper[Any]) -> dict[str, Any]:
     """从 ctx.context 提取运行时依赖。"""
-    inner = ctx.context if isinstance(ctx.context, dict) else {}
-    return inner
+    return ctx.context if isinstance(ctx.context, dict) else {}
 
 
 @function_tool

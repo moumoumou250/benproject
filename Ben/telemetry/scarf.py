@@ -32,7 +32,7 @@ def finding(severity: str, cwe: str | None = None, is_cve: bool = False) -> None
     logger.debug("telemetry(scarf) disabled: finding_reported (%s)", severity)
 
 
-def end(report_state: "ReportState", exit_reason: str = "completed") -> None:
+def end(report_state: ReportState, exit_reason: str = "completed") -> None:
     """维护 ReportState 的扫描结束标记；不发送任何遥测事件。"""
     if report_state.scarf_scan_ended_sent:
         return

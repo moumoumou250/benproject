@@ -1,0 +1,14 @@
+本次为"降配快速扫描"，原因是模型账号并发=1、RPM=3、当日 token 配额紧张：
+
+1. 不要创建任何子 agent（不使用 create_agent）。全部工作由你自己顺序完成。
+2. 每条 exec_command 尽量合并多个探测（同一命令内用 shell for 循环串多个路径），
+   把每次往返的信息量做大；只做只读探测（GET/HEAD/OPTIONS）。
+3. 轮数上限 6：优先覆盖下列高价值面，够用即收敛并 finish：
+   - 前端与静态资源暴露：/、/main.js、/assets/、robots.txt、/ftp/
+   - REST/API 未授权访问：/api/Products、/api/Feedbacks、/rest/memories、
+     /rest/admin/application-version、/rest/admin/application-configuration、
+     /rest/user/whoami、/rest/basket/1
+   - 错误处理与信息泄露：畸形参数、404/500 页面、版本与依赖线索
+4. 每条结论必须给出可复现命令 + 关键响应证据（状态码/响应片段）；证据不足时
+   明确标"未验证"，不要推测为漏洞。
+5. 遇到 429 就退避重试同一动作，不要另开并行请求。
