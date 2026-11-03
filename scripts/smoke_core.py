@@ -35,7 +35,6 @@ MODULES = [
     "Ben.llm.compaction",
     "Ben.llm.context_budget",
     "Ben.llm.request_log",
-    "Ben.llm.warmup",
     # 工具层
     "Ben.tools.output_store",
     "Ben.tools.load_skill.tool",

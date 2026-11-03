@@ -45,6 +45,7 @@ import contextlib
 import io
 import json
 import logging
+from typing import TYPE_CHECKING, Any
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -83,6 +84,9 @@ from Ben.interface.targets import HOST_GATEWAY_HOSTNAME, is_whitebox_scan
 from Ben.llm import request_log
 from Ben.runtime import session_manager
 from Ben.runtime.caido import CaidoBootstrapHandle
+
+if TYPE_CHECKING:
+    from Ben.tools.mcp import McpRegistry
 
 logger = logging.getLogger(__name__)
 

@@ -481,7 +481,7 @@ async def _next_event(
     handle = asyncio.get_running_loop().call_later(wait, expire)
     try:
         return await iterator.__anext__()
-    except BaseException as exc:
+    except BaseException:
         # 以取消标志 expired 为准，而非异常类型：expire() 触发 task.cancel() 后，
         # 内层 httpx 流可能把这次取消表现成它自己的 httpx.ReadTimeout 而非
         # CancelledError。按异常类型判定会把"我们主动超时"误传成"对方读超时"，

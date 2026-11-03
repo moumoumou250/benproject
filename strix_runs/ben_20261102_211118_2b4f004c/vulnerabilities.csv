@@ -1,2 +1,0 @@
-id,title,severity,timestamp,file
-vuln-0001,匿名未授权访问管理后台配置接口 `/rest/admin/application-configuration`,HIGH,2026-11-02 13:19:44 UTC,vulnerabilities/vuln-0001.md

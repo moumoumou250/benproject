@@ -68,8 +68,7 @@ BenProject/
 │   ├── llm/                    # 上下文与请求侧辅助（不再有 deepseek_client）
 │   │   ├── compaction.py       # 历史压缩
 │   │   ├── context_budget.py   # 上下文预算
-│   │   ├── request_log.py      # 请求日志
-│   │   └── warmup.py           # 预热
+│   │   └── request_log.py      # 请求日志
 │   ├── runtime/                # Docker 运行时（原 containers/ 中的连接逻辑 + sandbox/）
 │   │   ├── docker_connection.py    # 稳定的 Docker 守护进程连接
 │   │   ├── docker_client.py        # DockerSandboxClient（SDK sandbox 后端）
@@ -78,8 +77,7 @@ BenProject/
 │   │   ├── deferred_session.py     # 延迟启动会话
 │   │   ├── backends.py             # 后端选择
 │   │   ├── caido.py                # Caido 代理集成
-│   │   ├── status.py               # 运行状态
-│   │   └── check_docker_connection.py  # 连接自检脚本
+│   │   └── status.py               # 运行状态
 │   ├── tools/                  # 工具族（按子包划分，无单一 registry.py）
 │   │   ├── thinking/           # think
 │   │   ├── todo/               # create_todo / list_todos / update_todo / mark_todo_done
@@ -251,8 +249,7 @@ socket、不使用特权容器。
 - **已实际验证（含 Key）**：`--selftest-llm` 文本调用、function calling、
   完整 Agent 多轮循环、对公网授权靶标的端到端报告（见 `reports/`）。
 - **已实际验证（MCP）**：stdio 连接经 `~/.ben/mcp-servers.json` 直连 node.exe
-  启动官方 filesystem 服务器；list/search/schema/call 四步派发实测通过
-  （`_mcp_live_probe.py`）。
+  启动官方 filesystem 服务器；list/search/schema/call 四步派发实测通过。
 - 注：本项目在 Windows 上运行时，项目目录不得带 Low 完整性级别标签
   （`icacls . | findstr Mandatory` 应无输出），否则 Python 进程被降级，
   无法访问 Docker 命名管道。

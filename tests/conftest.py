@@ -142,3 +142,21 @@ def _plain_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TERM", "dumb")
     for name in ("COLORTERM", "FORCE_COLOR", "NO_COLOR", "TTY_COMPATIBLE"):
         monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_run_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """隔离运行目录：测试里的 ``ReportState`` 不得写进仓库 ``strix_runs/``。
+
+    ``ReportState.get_run_dir()`` 默认在工作目录下建
+    ``strix_runs/<run_id>``；测试没有传 run_name 时会产生 ``run-<uuid>``
+    垃圾目录，跑一次测试就多两个。这里把运行目录改到 pytest 的 tmp_path，
+    用例之间互不干扰。
+    """
+    from Ben.core import paths
+    from Ben.report import state as report_state
+
+    def _run_dir_for(run_name: str, *, cwd: Path | None = None) -> Path:
+        return paths.run_dir_for(run_name, cwd=cwd or tmp_path)
+
+    monkeypatch.setattr(report_state, "run_dir_for", _run_dir_for)

@@ -1,0 +1,6 @@
+# 项目工具配置（pytest 配置仍以 pytest.ini 为准）。
+# 仅用于让 ruff 知道目标 Python 版本：BaseExceptionGroup / ExceptionGroup
+# 是 3.11+ 内建名，否则会被 F821 误报。
+[tool.ruff]
+target-version = "py312"
+line-length = 100

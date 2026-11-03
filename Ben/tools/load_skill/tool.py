@@ -14,7 +14,6 @@ from agents.run_context import RunContextWrapper
 from Ben.skills import (
     SkillError,
     get_skill,
-    list_skills,
     validate_requested_skills,
 )
 

@@ -97,6 +97,9 @@ async def test_over_budget_raises() -> None:
 async def test_manual_rates_make_unpriced_model_trip_budget(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # LLM_MODEL 是 model 字段的第一别名；显式设置它，避免开发机上残留的
+    # LLM_MODEL（例如别的用例载入 .env 后留下的值）盖掉 BEN_LLM。
+    monkeypatch.setenv("LLM_MODEL", "test-model")
     monkeypatch.setenv("BEN_LLM", "test-model")
     monkeypatch.setenv("BEN_LLM_INPUT_COST_PER_MTOK", "10")
     monkeypatch.delenv("BEN_LLM_OUTPUT_COST_PER_MTOK", raising=False)
