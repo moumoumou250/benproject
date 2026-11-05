@@ -211,7 +211,7 @@ export default function App() {
   }, [refreshRuns, userSetView]);
 
   return (
-    <div className="min-h-screen bg-black text-white flex">
+    <div className="scan-console run-viewer">
       <Sidebar
         view={view}
         onSelectView={(v) => {
@@ -231,7 +231,7 @@ export default function App() {
         onOpenHistory={openHistory}
       />
 
-      <div className="flex-1 min-w-0">
+      <div className="console-workspace min-w-0">
         {/* Top bar */}
         <div className="border-b border-[#222]">
           <div className="max-w-[88rem] mx-auto px-3 sm:px-6 py-4 flex items-center gap-1.5">

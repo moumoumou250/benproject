@@ -42,12 +42,7 @@ export default function ScanConsole() {
   }
   if (viewing)
     return (
-      <>
-        <a className="console-back" href="/#history">
-          ← 返回测试控制台
-        </a>
-        <App />
-      </>
+      <App />
     );
   return (
     <div className="scan-console">
@@ -82,17 +77,11 @@ export default function ScanConsole() {
           )}
           {view === "overview" && (
             <>
-              <div className="console-grid">
+              <div className="workspace-form">
                 <ScanForm
                   busy={pending || !!status?.running}
                   unavailable={status?.available === false || !status}
                   onStart={launch}
-                />
-                <ScanProgress
-                  status={status}
-                  detail={detail}
-                  pending={pending}
-                  updatedAt={updatedAt}
                 />
               </div>
               <RunHistory runs={runs.slice(0, 5)} />
@@ -104,12 +93,15 @@ export default function ScanConsole() {
                 查看任务
                 <select
                   aria-label="选择执行记录"
-                  value={status?.run || ""}
+                  value={
+                    new URLSearchParams(location.search).get("progress") || ""
+                  }
                   onChange={(event) => {
+                    const url = new URL(location.href);
                     if (event.target.value)
-                      location.assign(
-                        `/?progress=${encodeURIComponent(event.target.value)}#activity`,
-                      );
+                      url.searchParams.set("progress", event.target.value);
+                    else url.searchParams.delete("progress");
+                    location.assign(url);
                   }}
                 >
                   <option value="">当前任务</option>
@@ -136,7 +128,7 @@ export default function ScanConsole() {
               )}
             </div>
           )}
-          {view === "history" && <RunHistory runs={runs} />}
+          {view === "history" && <RunHistory runs={runs} searchable />}
         </main>
         <footer>BEN · 网站安全测试工作空间</footer>
       </div>

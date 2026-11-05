@@ -1,5 +1,6 @@
 import { LayoutDashboard, Activity, History, ShieldCheck } from "lucide-react";
 import type { ConsoleView } from "../types";
+import type { ReactNode } from "react";
 const items = [
   { id: "overview", label: "测试工作台", icon: LayoutDashboard },
   { id: "activity", label: "实时运行", icon: Activity },
@@ -10,11 +11,13 @@ export function ConsoleSidebar({
   onChange,
   running,
   runCount,
+  children,
 }: {
   view: ConsoleView;
   onChange: (view: ConsoleView) => void;
   running: boolean;
   runCount: number;
+  children?: ReactNode;
 }) {
   return (
     <aside className="console-sidebar">
@@ -42,6 +45,7 @@ export function ConsoleSidebar({
           </button>
         ))}
       </nav>
+      {children}
       <div className="sidebar-bottom">
         <div className="workspace-health">
           <i className="live-dot" />

@@ -1,24 +1,9 @@
-import React, { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, Bot, History } from "lucide-react";
+import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
+import { AlertTriangle, Bot, LayoutDashboard } from "lucide-react";
 import type { McpConnectionStatus } from "@/data/serverSource";
 import type { View } from "@/App";
-
-/**
- * Persistent left rail: a black rail with a right hairline border, an
- * account-switcher-style header, a single ungrouped list of h-9 nav rows (36px
- * icon slot, 14px label, rgba(255,255,255,0.12) active fill), a hairline
- * separator, and a footer. Drag the right edge to resize; drag past the
- * collapse threshold to hide it, then click the left pull-zone to bring it back.
- */
-
-const MIN_WIDTH = 160;
-const DEFAULT_WIDTH = 260;
-const MAX_WIDTH = 400;
-const COLLAPSE_THRESHOLD = 140;
-
-const WIDTH_KEY = "ben_viewer_sidebar_width";
-const COLLAPSE_KEY = "ben_viewer_sidebar_collapsed";
+import { ConsoleSidebar } from "@/features/scan-console/components/ConsoleSidebar";
 
 interface SidebarProps {
   view: View;
@@ -32,249 +17,40 @@ interface SidebarProps {
   onOpenHistory: () => void;
 }
 
-function readInt(key: string, fallback: number): number {
-  try {
-    const raw = localStorage.getItem(key);
-    const n = raw ? parseInt(raw, 10) : NaN;
-    return Number.isFinite(n) ? n : fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-export default function Sidebar({
-  view,
-  onSelectView,
-  issuesCount,
-  agentCount,
-  mcpConnections,
-  mcpInUse,
-  runCount,
-  finished,
-  onOpenHistory,
-}: SidebarProps) {
-  const [width, setWidth] = useState(() => {
-    const w = readInt(WIDTH_KEY, DEFAULT_WIDTH);
-    return Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, w));
-  });
-  const [collapsed, setCollapsed] = useState(() => {
-    try {
-      return localStorage.getItem(COLLAPSE_KEY) === "1";
-    } catch {
-      return false;
-    }
-  });
-  const [isResizing, setIsResizing] = useState(false);
-
-  const persistWidth = useCallback((w: number) => {
-    setWidth(w);
-    try {
-      localStorage.setItem(WIDTH_KEY, String(w));
-    } catch {
-      /* best-effort persistence */
-    }
-  }, []);
-
-  const persistCollapsed = useCallback((c: boolean) => {
-    setCollapsed(c);
-    try {
-      localStorage.setItem(COLLAPSE_KEY, c ? "1" : "0");
-    } catch {
-      /* best-effort persistence */
-    }
-  }, []);
-
-  const expandSidebar = useCallback(() => {
-    persistCollapsed(false);
-    persistWidth(DEFAULT_WIDTH);
-  }, [persistCollapsed, persistWidth]);
-
-  const handleResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    setIsResizing(true);
-  }, []);
-
-  // Global drag handlers for the resize handle. Dragging below the collapse
-  // threshold hides the rail entirely.
-  useEffect(() => {
-    if (!isResizing || collapsed) return;
-
-    const handleMouseMove = (e: MouseEvent) => {
-      const newWidth = e.clientX;
-      if (newWidth >= MIN_WIDTH && newWidth <= MAX_WIDTH) {
-        setWidth(newWidth);
-      } else if (newWidth > MAX_WIDTH) {
-        setWidth(MAX_WIDTH);
-      }
-    };
-    const handleMouseUp = (e: MouseEvent) => {
-      const finalWidth = e.clientX;
-      if (finalWidth < COLLAPSE_THRESHOLD) {
-        persistCollapsed(true);
-        persistWidth(DEFAULT_WIDTH);
-      } else {
-        persistWidth(Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, finalWidth)));
-      }
-      setIsResizing(false);
-    };
-
-    window.addEventListener("mousemove", handleMouseMove);
-    window.addEventListener("mouseup", handleMouseUp);
-    return () => {
-      window.removeEventListener("mousemove", handleMouseMove);
-      window.removeEventListener("mouseup", handleMouseUp);
-    };
-  }, [isResizing, collapsed, persistCollapsed, persistWidth]);
-
+export default function Sidebar(props: SidebarProps) {
+  const items = [
+    { id: "overview", label: "任务概览", icon: LayoutDashboard, count: undefined },
+    { id: "issues", label: "漏洞详情", icon: AlertTriangle, count: props.issuesCount },
+    { id: "agents", label: "Agent 活动", icon: Bot, count: props.agentCount },
+  ] as const;
   return (
-    <>
-      {/* Left-edge pull zone: click to bring the rail back when collapsed. */}
-      {collapsed && (
-        <div
-          className="fixed left-0 top-0 z-40 hidden h-full w-4 cursor-pointer transition-colors hover:bg-[rgba(255,255,255,0.08)] lg:block"
-          onClick={expandSidebar}
-          title="Expand sidebar"
-        />
-      )}
-
-      <aside
-        className={cn(
-          "sticky top-0 z-20 hidden h-screen flex-shrink-0 flex-col overflow-hidden border-r border-[rgba(255,255,255,0.08)] bg-black lg:flex",
-          !isResizing && "transition-[width] duration-200 ease-out"
-        )}
-        style={{ width: collapsed ? 0 : width }}
-      >
-        {/* Header — local product mark. */}
-        <header className="relative flex flex-col gap-1 pt-1 min-w-[160px]">
-          <div className="flex flex-row py-1 px-2">
-            <div className="flex h-10 w-full flex-row items-center">
-              <div className="flex flex-1 flex-row items-center gap-2 rounded-md py-2 pl-2.5 pr-1 min-w-0">
-                <span
-                  className="flex flex-shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-emerald-400 to-cyan-500"
-                  style={{ width: 20, height: 20 }}
-                >
-                  <span className="text-[10px] font-semibold text-white">B</span>
-                </span>
-                <span className="flex flex-1 flex-row items-center gap-2 min-w-0">
-                  <span className="truncate min-w-0 text-[14px] font-medium text-[#ededed]">Ben</span>
-                  <span className="flex h-5 flex-shrink-0 items-center rounded px-2 text-[11px] font-medium text-[#888] bg-[rgba(255,255,255,0.08)]">
-                    Local
-                  </span>
-                </span>
-              </div>
-            </div>
-          </div>
-        </header>
-
-        {/* Navigation */}
-        <nav className="relative min-w-[160px] flex-1 overflow-y-auto overflow-x-clip scrollbar-thin pb-10 pt-2">
-          <div className="relative flex flex-col gap-px px-2">
-            <NavItem
-              icon={<ProjectsIcon />}
-              label="Pentest Overview"
-              active={view === "overview"}
-              onClick={() => onSelectView("overview")}
-            />
-            <NavItem
-              icon={<AlertTriangle className="h-4 w-4" />}
-              label="Issues"
-              count={issuesCount > 0 ? issuesCount : undefined}
-              active={view === "issues"}
-              onClick={() => onSelectView("issues")}
-            />
-            {agentCount > 0 && (
-              <NavItem
-                icon={<Bot className="h-4 w-4" />}
-                label="Agents"
-                count={agentCount}
-                active={view === "agents"}
-                onClick={() => onSelectView("agents")}
-              />
-            )}
-            {mcpConnections.length > 0 && (
-              <McpConnectionsPanel connections={mcpConnections} inUse={mcpInUse} />
-            )}
-            <NavItem
-              icon={<History className="h-4 w-4" />}
-              label="Past runs"
-              count={runCount > 0 ? runCount : undefined}
-              active={view === "history"}
-              onClick={onOpenHistory}
-            />
-          </div>
-        </nav>
-
-        {/* Footer — local viewer identity. */}
-        <section className="flex min-w-[160px] flex-col gap-0.5">
-          <div className="relative p-2">
-            <div className="flex items-center gap-2 rounded-md px-2.5 py-2">
-              <span
-                className="flex flex-shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-emerald-400 to-cyan-500"
-                style={{ width: 20, height: 20 }}
-              >
-                <span className="text-[9px] font-semibold text-white">B</span>
-              </span>
-              <span className="flex min-w-0 flex-1 flex-col text-left">
-                <span className="truncate text-[13px] font-medium text-[#ededed]">
-                  Local viewer
-                </span>
-                <span className="truncate text-[11px] text-[#555]">
-                  {finished ? "Run complete" : "Run data stays on this machine"}
-                </span>
-              </span>
-            </div>
-          </div>
-        </section>
-
-        {/* Resize handle */}
-        <div
-          className="group absolute right-0 top-0 z-30 h-full w-1 cursor-col-resize"
-          onMouseDown={handleResizeStart}
-        >
-          <div
-            className={cn(
-              "absolute right-0 top-0 h-full w-px bg-[rgba(255,255,255,0.08)] transition-all duration-100",
-              isResizing ? "w-0.5 bg-[rgba(255,255,255,0.3)]" : "group-hover:bg-[rgba(255,255,255,0.2)]"
-            )}
-          />
-        </div>
-      </aside>
-
-      {/* Overlay during resize to prevent text selection. */}
-      {isResizing && <div className="fixed inset-0 z-10 cursor-col-resize" />}
-    </>
-  );
-}
-
-interface NavItemProps {
-  icon: React.ReactNode;
-  label: string;
-  active: boolean;
-  onClick: () => void;
-  count?: number;
-}
-
-function NavItem({ icon, label, active, onClick, count }: NavItemProps) {
-  return (
-    <button
-      onClick={onClick}
-      className={cn(
-        "group flex h-9 w-full origin-left flex-row items-center rounded-md transition-colors",
-        active
-          ? "bg-[rgba(255,255,255,0.12)] text-white"
-          : "text-[#888] hover:bg-[rgba(255,255,255,0.06)] hover:text-[#ededed]"
-      )}
+    <ConsoleSidebar
+      view="history"
+      onChange={(view) => {
+        const url = new URL(location.href);
+        url.searchParams.delete("view");
+        url.searchParams.delete("run");
+        url.searchParams.delete("progress");
+        url.hash = view;
+        location.assign(url);
+      }}
+      running={!props.finished}
+      runCount={props.runCount}
     >
-      <div className="grid flex-none place-content-center" style={{ width: 36, height: 36 }}>
-        {icon}
-      </div>
-      <span className="min-w-0 flex-1 truncate text-left text-[14px] font-medium">{label}</span>
-      {count != null && (
-        <span className="mr-2 flex-none rounded-full border border-white/10 px-2 py-0.5 text-[10px] tabular-nums leading-none text-[#777]">
-          {count}
-        </span>
+      <p className="nav-caption">当前任务</p>
+      <nav aria-label="任务导航">
+        {items.map(({ id, label, icon: Icon, count }) => (
+          <button key={id} className={props.view === id ? "nav-active" : ""}
+            aria-current={props.view === id ? "page" : undefined}
+            onClick={() => props.onSelectView(id)}>
+            <Icon size={18} />{label}{count != null && <small>{count}</small>}
+          </button>
+        ))}
+      </nav>
+      {props.mcpConnections.length > 0 && (
+        <McpConnectionsPanel connections={props.mcpConnections} inUse={props.mcpInUse} />
       )}
-    </button>
+    </ConsoleSidebar>
   );
 }
 

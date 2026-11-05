@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { AgentRoster } from "./AgentRoster";
+import { setScanPaused } from "../api";
 import {
   Activity,
   ArrowUpRight,
@@ -39,6 +40,21 @@ export function ScanProgress({
   updatedAt: Date | null;
 }) {
   const [now, setNow] = useState(Date.now());
+  const [controlling, setControlling] = useState(false);
+  const [controlError, setControlError] = useState("");
+  const [paused, setPaused] = useState(!!status?.paused);
+  useEffect(() => { setPaused(!!status?.paused); }, [status?.paused, status?.run, status?.running]);
+  async function togglePause() {
+    if (controlling) return;
+    setControlling(true);
+    setControlError("");
+    try {
+      const result = await setScanPaused(!paused);
+      setPaused(!!result.paused);
+    }
+    catch (error) { setControlError(error instanceof Error ? error.message : String(error)); }
+    finally { setControlling(false); }
+  }
   useEffect(() => {
     if (!status?.running) return;
     setNow(Date.now());
@@ -95,8 +111,15 @@ export function ScanProgress({
     <section className="console-card progress-card">
       <div className="card-heading">
         <div>
-          <span className="eyebrow">LIVE EXECUTION</span>
           <h2>运行进度</h2>
+          {status?.running && (
+            <button type="button" className="secondary-button" disabled={controlling}
+              onClick={() => void togglePause()}>
+              {controlling ? "正在提交…" : paused ? "继续测试" : "暂停测试"}
+            </button>
+          )}
+          {paused && <p>已请求暂停：当前步骤完成后，所有 Agent 将暂停；点击继续测试恢复。</p>}
+          {controlError && <p role="alert" className="console-error">{controlError}</p>}
         </div>
         <span
           className={`state-badge ${running ? "is-live" : failed ? "is-failed" : ""}`}
@@ -190,66 +213,74 @@ export function ScanProgress({
           <span>Agent 数量</span>
         </div>
       </div>
-      <AgentRoster agents={detail?.transcript.agents ?? []} events={detail?.transcript.events ?? []} runId={status?.run ?? null}/>
-      <div className="activity-heading">
-        <h3>最近执行活动</h3>
-        <small>
-          {updatedAt
-            ? `${updatedAt.toLocaleTimeString("zh-CN", { hour12: false })} 已同步`
-            : "正在连接…"}
-        </small>
-      </div>
-      <div className="activity-list">
-        {tools.length ? (
-          tools
-            .slice(-6)
-            .reverse()
-            .map((event) => {
-              const tool = String(
-                event.data.tool_name ?? event.data.name ?? "工具调用",
-              );
-              const state = String(event.data.status ?? "");
-              return (
-                <div className="activity-row" key={event.id}>
-                  <span
-                    className={`activity-icon ${state === "running" ? "active" : ""}`}
-                  >
-                    {state === "running" ? (
-                      <LoaderCircle className="spin" size={14} />
-                    ) : (
-                      <Check size={14} />
-                    )}
-                  </span>
-                  <div>
-                    <strong>{names[tool] || tool}</strong>
-                    <small>
-                      {detail?.transcript.agents.find(
-                        (a) => a.id === event.agent_id,
-                      )?.name ?? "Agent"}{" "}
-                      · {tool}
-                    </small>
-                  </div>
-                  <span>
-                    {state === "running"
-                      ? "执行中"
-                      : state === "failed" || state === "error"
-                        ? "失败"
-                        : "已返回"}
-                  </span>
-                  <time>{time(event.timestamp)}</time>
-                </div>
-              );
-            })
-        ) : (
-          <div className="activity-empty">
-            <Bot size={24} />
-            <p>
-              {running
-                ? "模型正在连接或生成响应；收到工具事件后会显示在这里。"
-                : "暂无执行活动，创建测试后即可查看。"}
-            </p>
+      <div className="scan-run-columns">
+        <AgentRoster
+          agents={detail?.transcript.agents ?? []}
+          events={detail?.transcript.events ?? []}
+          runId={status?.run ?? null}
+        />
+        <div className="scan-run-activity">
+          <div className="activity-heading">
+            <h3>最近执行活动</h3>
+            <small>
+              {updatedAt
+                ? `${updatedAt.toLocaleTimeString("zh-CN", { hour12: false })} 已同步`
+                : "正在连接…"}
+            </small>
           </div>
-        )}
+          <div className="activity-list">
+            {tools.length ? (
+              tools
+                .slice(-6)
+                .reverse()
+                .map((event) => {
+                  const tool = String(
+                    event.data.tool_name ?? event.data.name ?? "工具调用",
+                  );
+                  const state = String(event.data.status ?? "");
+                  return (
+                    <div className="activity-row" key={event.id}>
+                      <span
+                        className={`activity-icon ${state === "running" ? "active" : ""}`}
+                      >
+                        {state === "running" ? (
+                          <LoaderCircle className="spin" size={14} />
+                        ) : (
+                          <Check size={14} />
+                        )}
+                      </span>
+                      <div>
+                        <strong>{names[tool] || tool}</strong>
+                        <small>
+                          {detail?.transcript.agents.find(
+                            (a) => a.id === event.agent_id,
+                          )?.name ?? "Agent"}{" "}
+                          · {tool}
+                        </small>
+                      </div>
+                      <span>
+                        {state === "running"
+                          ? "执行中"
+                          : state === "failed" || state === "error"
+                            ? "失败"
+                            : "已返回"}
+                      </span>
+                      <time>{time(event.timestamp)}</time>
+                    </div>
+                  );
+                })
+            ) : (
+              <div className="activity-empty">
+                <Bot size={24} />
+                <p>
+                  {running
+                    ? "模型正在连接或生成响应；收到工具事件后会显示在这里。"
+                    : "暂无执行活动，创建测试后即可查看。"}
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
       </div>
       {status?.run && (
         <a

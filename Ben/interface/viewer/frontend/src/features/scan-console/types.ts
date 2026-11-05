@@ -8,6 +8,7 @@ export interface ScanRequest {
   max_turns: number;
 }
 export interface ScanStatus {
+  paused?: boolean;
   running: boolean;
   exit_code: number | null;
   run: string | null;

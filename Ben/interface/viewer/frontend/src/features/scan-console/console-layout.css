@@ -756,20 +756,247 @@
     animation: none;
   }
 }
-.agent-roster { margin-top: 22px; padding-bottom: 18px; border-bottom: 1px solid #28384c; }
-.agent-roster .activity-heading h3 { display: flex; align-items: center; gap: 8px; }
-.agent-roster-empty { font-size: 11px; line-height: 1.8; color: #8198b2; margin: 10px 0; }
-.agent-tree { display: grid; gap: 9px; max-height: 390px; overflow: auto; }
-.agent-roster-row { display: flex; align-items: center; gap: 11px; min-width: 0; text-align: left; padding: 13px; background: #101c2b; border: 1px solid #2c3d53; border-radius: 9px; color: #8fa8c3; cursor: pointer; }
-.agent-roster-row:hover, .agent-roster-row:focus-visible { border-color: #72c7ac; outline: none; background: #152b30; }
-.agent-avatar { display: grid; place-items: center; width: 32px; height: 32px; flex-shrink: 0; border-radius: 9px; background: #234637; color: #9ce4c3; }
-.agent-avatar.child { background: #253954; color: #9cc7ef; }
-.agent-roster-info { flex: 1; min-width: 0; display: grid; gap: 5px; }
-.agent-roster-info strong { font-size: 12px; font-weight: 500; color: #d7e4f2; overflow-wrap: anywhere; }
-.agent-roster-info strong small { font-size: 9px; font-weight: 400; color: #7f99b4; margin-left: 8px; }
-.agent-roster-info > span { font-size: 10px; overflow-wrap: anywhere; }
-.agent-status { padding: 4px 7px; border-radius: 5px; font-size: 10px; white-space: nowrap; background: #263448; color: #a4b6ce; }
-.agent-status.running { background: #213e52; color: #8bc9f0; }
-.agent-status.completed { background: #203d32; color: #9ce2bf; }
-.agent-status.failed, .agent-status.crashed { background: #452d38; color: #f2a7b8; }
-.agent-status.waiting, .agent-status.budget_paused { background: #403a29; color: #dfcc8c; }
+.agent-roster {
+  margin-top: 22px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid #28384c;
+}
+.agent-roster .activity-heading h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.agent-roster-empty {
+  font-size: 11px;
+  line-height: 1.8;
+  color: #8198b2;
+  margin: 10px 0;
+}
+.agent-tree {
+  display: grid;
+  gap: 9px;
+  max-height: 390px;
+  overflow: auto;
+}
+.agent-roster-row {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-width: 0;
+  text-align: left;
+  padding: 13px;
+  background: #101c2b;
+  border: 1px solid #2c3d53;
+  border-radius: 9px;
+  color: #8fa8c3;
+  cursor: pointer;
+}
+.agent-roster-row:hover,
+.agent-roster-row:focus-visible {
+  border-color: #72c7ac;
+  outline: none;
+  background: #152b30;
+}
+.agent-avatar {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border-radius: 9px;
+  background: #234637;
+  color: #9ce4c3;
+}
+.agent-avatar.child {
+  background: #253954;
+  color: #9cc7ef;
+}
+.agent-roster-info {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+.agent-roster-info strong {
+  font-size: 12px;
+  font-weight: 500;
+  color: #d7e4f2;
+  overflow-wrap: anywhere;
+}
+.agent-roster-info strong small {
+  font-size: 9px;
+  font-weight: 400;
+  color: #7f99b4;
+  margin-left: 8px;
+}
+.agent-roster-info > span {
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+.agent-status {
+  padding: 4px 7px;
+  border-radius: 5px;
+  font-size: 10px;
+  white-space: nowrap;
+  background: #263448;
+  color: #a4b6ce;
+}
+.agent-status.running {
+  background: #213e52;
+  color: #8bc9f0;
+}
+.agent-status.completed {
+  background: #203d32;
+  color: #9ce2bf;
+}
+.agent-status.failed,
+.agent-status.crashed {
+  background: #452d38;
+  color: #f2a7b8;
+}
+.agent-status.waiting,
+.agent-status.budget_paused {
+  background: #403a29;
+  color: #dfcc8c;
+}
+.test-requirements {
+  margin: 22px 0;
+  padding: 20px 0 0;
+  border: 0;
+  border-top: 1px solid #2b3b50;
+  min-width: 0;
+}
+.test-requirements legend {
+  font-size: 14px;
+  font-weight: 600;
+  padding-right: 14px;
+  color: #d8e6f5;
+}
+.requirements-note {
+  font-size: 11px;
+  color: #8ba2be;
+  line-height: 1.8;
+  margin-bottom: 18px;
+}
+.focus-options {
+  margin: 16px 0 22px;
+  font-size: 11px;
+  color: #c5d2e2;
+}
+.focus-options > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.console-card .focus-options label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  border: 1px solid #32445c;
+  border-radius: 7px;
+  padding: 8px 10px;
+  background: #101c2b;
+  cursor: pointer;
+}
+.focus-options input {
+  accent-color: #80e5c5;
+}
+.requirements-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.requirements-preview {
+  font-size: 11px;
+  color: #91cbb8;
+  padding: 12px;
+  border: 1px solid #314b47;
+  border-radius: 8px;
+  margin: 16px 0 20px;
+}
+.requirements-preview summary {
+  cursor: pointer;
+}
+.requirements-preview pre {
+  max-height: 300px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.8;
+  color: #a7bcd0;
+  margin-top: 12px;
+}
+@media (max-width: 700px) {
+  .requirements-columns {
+    grid-template-columns: 1fr;
+  }
+}
+.scan-config-layout,
+.scan-run-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0.75fr);
+  gap: 24px;
+  align-items: start;
+}
+.scan-config-summary {
+  position: sticky;
+  top: 18px;
+  padding: 18px;
+  background: #101c2b;
+  border: 1px solid #32445c;
+  border-radius: 10px;
+}
+.scan-config-summary h3 {
+  font-size: 16px;
+  margin: 0 0 14px;
+}
+.scan-config-summary dl {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 9px 14px;
+  font-size: 13px;
+}
+.scan-config-summary dt {
+  color: #a5b8ce;
+}
+.scan-config-summary dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-line;
+  max-height: 7em;
+  overflow: auto;
+}
+.scan-advanced {
+  margin: 0 0 18px;
+  border: 1px solid #32445c;
+  border-radius: 8px;
+  padding: 12px;
+}
+.scan-advanced summary {
+  cursor: pointer;
+}
+.scan-advanced .field-row {
+  margin-top: 12px;
+}
+.scan-run-columns {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.scan-run-columns .agent-roster {
+  margin-top: 0;
+  border-bottom: 0;
+}
+.scan-run-activity .activity-list {
+  max-height: 390px;
+  overflow: auto;
+}
+@media (max-width: 900px) {
+  .scan-config-layout,
+  .scan-run-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .scan-config-summary {
+    position: static;
+  }
+}

@@ -16,6 +16,8 @@ async function json<T>(
 }
 export const getStatus = (signal: AbortSignal) =>
   json<ScanStatus>("/api/scans", signal);
+export const setScanPaused = (paused: boolean) =>
+  json<ScanStatus>(`/api/scans/${paused ? "pause" : "resume"}`, undefined, { method: "POST" });
 export const getHistory = (signal: AbortSignal) =>
   json<{ runs: HistoryRun[] }>("/api/runs", signal);
 export const launchScan = (body: ScanRequest) =>
