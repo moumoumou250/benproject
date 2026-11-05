@@ -561,6 +561,7 @@ class _CredentialedLitellmProvider(ModelProvider):
     """
 
     def __init__(self, api_key: str | None, base_url: str | None) -> None:
+        # 保存此端点的 API Key 和地址。
         self._api_key = api_key
         self._base_url = base_url
 
@@ -568,6 +569,7 @@ class _CredentialedLitellmProvider(ModelProvider):
         from agents.extensions.models.litellm_model import LitellmModel
         from agents.models.default_models import get_default_model
 
+        # 未指定模型名时使用默认值，并将此端点的配置传给模型。
         return LitellmModel(
             model=model_name or get_default_model(),
             api_key=self._api_key,

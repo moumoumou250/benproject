@@ -163,7 +163,7 @@ def _make_handler(state: _ViewerState) -> type[BaseHTTPRequestHandler]:
         def do_POST(self) -> None:
             path = urlsplit(self.path).path
             try:
-                if path == "/api/scans":
+                if path in {"/api/scans", "/api/scans/pause", "/api/scans/resume"}:
                     if not self._has_session():
                         self._send_json(HTTPStatus.FORBIDDEN, {"error": "forbidden"})
                         return
@@ -178,7 +178,9 @@ def _make_handler(state: _ViewerState) -> type[BaseHTTPRequestHandler]:
                         return
                     try:
                         self._send_json(
-                            HTTPStatus.ACCEPTED, state.launcher.start(self._read_body())
+                            HTTPStatus.ACCEPTED,
+                            state.launcher.start(self._read_body()) if path == "/api/scans"
+                            else state.launcher.set_paused(path.endswith("/pause"))
                         )
                     except ValueError as exc:
                         self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})

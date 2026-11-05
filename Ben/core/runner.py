@@ -45,6 +45,7 @@ import contextlib
 import io
 import json
 import logging
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -1041,6 +1042,22 @@ class AgentRunner:
                 async with coordinator._lock:
                     root_status = coordinator.statuses.get(root_id)
 
+                async def watch_operator_pause():
+                    pause_file = os.environ.get("BEN_SCAN_PAUSE_FILE")
+                    if not pause_file:
+                        return
+                    requested = False
+                    while True:
+                        paused = Path(pause_file).exists()
+                        if paused != requested:
+                            if paused:
+                                await coordinator.pause_budget()
+                            else:
+                                await coordinator.resume_budget()
+                            requested = paused
+                        await asyncio.sleep(0.25)
+
+                pause_watcher = asyncio.create_task(watch_operator_pause())
                 try:
                     result = await run_agent_loop(
                         agent=root_agent,
@@ -1062,6 +1079,10 @@ class AgentRunner:
                     logger.info("[Runner] 达到最大轮数（%d），正常停止", max_turns)
                     stopped_reason = f"达到最大轮数（{max_turns} 轮）"
                     result = None
+                finally:
+                    pause_watcher.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await pause_watcher
 
                 # 停止原因：优先看 coordinator 中 root 的终态（对齐 strix：
                 # 生命周期工具把 root 标记 completed）

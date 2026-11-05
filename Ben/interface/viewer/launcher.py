@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -18,6 +19,7 @@ class ScanLauncher:
         self.lock = threading.Lock()
         self.previous: set[str] = set()
         self.target = ""
+        self.control_path: Path | None = None
         self.log_path = self.root / "reports" / "web-scan.log"
 
     def status(self) -> dict:
@@ -39,6 +41,7 @@ class ScanLauncher:
         return {
             "running": self.process is not None and code is None,
             "exit_code": code,
+            "paused": bool(self.process and code is None and self.control_path and self.control_path.exists()),
             "run": run,
             "target": self.target,
             "log": self.log_path.read_text(encoding="utf-8", errors="replace")[-20000:]
@@ -46,11 +49,24 @@ class ScanLauncher:
             else "",
         }
 
+    def set_paused(self, paused: bool) -> dict:
+        with self.lock:
+            if not self.process or self.process.poll() is not None or not self.control_path:
+                raise RuntimeError("没有正在运行的测试")
+            if paused:
+                self.control_path.touch()
+            else:
+                self.control_path.unlink(missing_ok=True)
+            return self._status()
+
     def start(self, body: dict) -> dict:
         target = body.get("target", "")
         if not isinstance(target, str) or len(target) > 2048:
             raise ValueError("请输入有效的网站 URL")
-        parsed = urlsplit(target.strip())
+        target = target.strip()
+        if target and "://" not in target and not target.startswith(("-", "/")):
+            target = "http://" + target
+        parsed = urlsplit(target)
         try:
             _ = parsed.port
         except ValueError as exc:
@@ -100,11 +116,14 @@ class ScanLauncher:
             ]
             if instruction.strip():
                 command.extend(["--instruction", instruction.strip()])
+            self.control_path = self.log_path.with_suffix(".pause")
+            environment = dict(os.environ, BEN_SCAN_PAUSE_FILE=str(self.control_path))
             try:
                 with self.log_path.open("w", encoding="utf-8") as output:
                     self.process = subprocess.Popen(
                         command,
                         cwd=self.root,
+                        env=environment,
                         stdout=output,
                         stderr=subprocess.STDOUT,
                         creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
