@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import AliasChoices, Field, field_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
     DotEnvSettingsSource,
@@ -82,6 +82,48 @@ _BASE_CONFIG = SettingsConfigDict(
     env_file=str(PROJECT_ROOT / ".env"),
     env_file_encoding="utf-8",
 )
+
+# 授权目标没有内置地址。缺失时各入口用这段原文提示，禁止回退到历史靶场。
+MISSING_ALLOWED_TARGETS = (
+    "缺少授权目标：请在 .env 中设置 ALLOWED_TARGETS"
+    "（逗号分隔的 http/https URL）。未配置时拒绝启动，不会使用内置默认地址。"
+)
+
+
+def allowed_targets_env_path() -> Path | None:
+    """本次进程实际读取的 env 文件。
+
+    未设置 ``BEN_ENV_FILE`` 时就是项目根 ``.env``。该变量只用来选择读哪一份
+    env 文件（测试隔离或部署改指向），不能另外提供一份目标清单去覆盖它。
+    """
+    env_file = resolve_env_file()
+    if env_file is _UNSET:
+        return PROJECT_ROOT / ".env"
+    if not env_file:
+        return None
+    return Path(str(env_file))
+
+
+def read_allowed_targets_raw() -> str:
+    """只从 env 文件读取 ``ALLOWED_TARGETS``。
+
+    进程环境变量、``~/.ben/cli-config.json`` 和字段默认值都不参与。
+    文件不存在、键缺失或值为空白时返回空字符串。
+    """
+    path = allowed_targets_env_path()
+    if path is None or not path.is_file():
+        return ""
+    try:
+        from dotenv import dotenv_values
+
+        values = dotenv_values(path)
+    except OSError:
+        return ""
+    raw = values.get("ALLOWED_TARGETS") if isinstance(values, dict) else None
+    if raw is None:
+        return ""
+    return str(raw).strip()
+
 
 ReasoningEffort = Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]
 ApiType = Literal["responses", "chat_completions"]
@@ -359,13 +401,17 @@ class Settings(_BenSettings):
         return self.llm.max_turns
 
     # --- 授权目标（白名单，Ben 特有）---
-    # 用 str 类型从环境变量读取，通过 property 转为 tuple。
-    # pydantic-settings 对 tuple[str, ...] 类型会尝试 JSON 解析，
-    # 而我们的 .env 使用逗号分隔字符串，所以先存为 raw 字符串再转换。
-    allowed_targets_raw: str = Field(
-        default="http://juice-shop:3000",
-        validation_alias=AliasChoices("ALLOWED_TARGETS"),
-    )
+    # 用 str 类型保存逗号分隔原文，通过 property 转为 tuple。
+    # 值只来自 env 文件里的 ALLOWED_TARGETS（见下面的 model_validator）。
+    # 不设 validation_alias：否则进程环境变量会先于 .env 写入本字段。
+    # 默认空字符串，禁止回退到任何历史靶场地址。
+    allowed_targets_raw: str = ""
+
+    @model_validator(mode="after")
+    def _bind_allowed_targets_from_dotenv(self) -> Settings:
+        """构造后再绑一次，盖掉 init 参数和别处写入的同名字段。"""
+        self.allowed_targets_raw = read_allowed_targets_raw()
+        return self
 
     @property
     def allowed_targets(self) -> tuple[str, ...]:
@@ -431,6 +477,14 @@ class Settings(_BenSettings):
                 "或使用带前缀模型并配置厂商专属变量（如 MOONSHOT_API_KEY）"
             )
         return problems
+
+
+def require_allowed_targets(settings: Settings) -> tuple[str, ...]:
+    """扫描与工具自检的统一入口：白名单为空就拒绝，不回退任何历史地址。"""
+    targets = tuple(getattr(settings, "allowed_targets", ()) or ())
+    if not targets:
+        raise ValueError(MISSING_ALLOWED_TARGETS)
+    return targets
 
 
 def load_settings(*, require_api_key: bool = True) -> Settings:

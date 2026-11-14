@@ -138,6 +138,64 @@ def test_privacy_error_is_recognized() -> None:
     assert "Privacy Mode (no training)" in str(mapped)
 
 
+def test_grok_responses_ignore_short_request_timeout() -> None:
+    from agents.model_settings import ModelSettings
+
+    model = _GrokResponsesModel("grok-4.6", AsyncOpenAI(api_key="x"))
+    settings = model._codex_settings(ModelSettings(extra_args={"timeout": 60}))
+    assert settings.extra_args is None or "timeout" not in settings.extra_args
+    assert settings.store is False
+
+
+def test_grok_model_settings_omit_llm_timeout() -> None:
+    from Ben.core.inputs import make_model_settings
+
+    grok = make_model_settings(None, model_name="grok/grok-4.6", request_timeout=60)
+    assert grok.extra_args is None or "timeout" not in (grok.extra_args or {})
+    other = make_model_settings(None, model_name="gpt-4o", request_timeout=60)
+    assert (other.extra_args or {}).get("timeout") == 60
+
+
+def test_grok_http_client_multiplexes_with_http2(monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+
+    monkeypatch.setattr(grok_build, "get_valid_token", lambda: "tok")
+    client = grok_build.build_openai_client()
+    try:
+        pool = client._client._transport._pool
+        assert pool._http2 is True
+        assert pool._retries == 1
+    finally:
+        asyncio.run(client.close())
+
+
+def test_get_model_leaves_openai_responses_when_probe_says_unsupported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import Ben.config.loader as loader
+    from agents.models.openai_chatcompletions import OpenAIChatCompletionsModel
+
+    from Ben.config import llm_probe
+    from Ben.config.models import _NonStreamingModel
+
+    monkeypatch.setattr(grok_build, "get_client", lambda: AsyncOpenAI(api_key="x"))
+    monkeypatch.setenv("LLM_MODEL", "grok/grok-4.7")
+    loader._cached = None
+    loader.load_settings()
+    llm_probe.mark_skip_openai()
+    try:
+        model = BenProvider().get_model("grok/grok-4.7")
+        assert isinstance(model, _TurnGuardModel)
+        assert isinstance(model._inner, _NonStreamingModel)
+        logged = model._inner._inner
+        assert isinstance(logged, request_log.RequestLoggingModel)
+        assert isinstance(logged._inner, OpenAIChatCompletionsModel)
+        assert model._stream_idle_timeout is None
+    finally:
+        llm_probe.reset()
+        loader._cached = None
+
+
 def test_get_model_uses_grok_responses(monkeypatch: pytest.MonkeyPatch) -> None:
     import Ben.config.loader as loader
 
@@ -146,6 +204,9 @@ def test_get_model_uses_grok_responses(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LLM_DISABLE_STREAMING", "true")
     loader._cached = None
     loader.load_settings()
+    from Ben.config import llm_probe
+
+    llm_probe.reset()
     try:
         model = BenProvider().get_model("grok/grok-4.7")
         assert isinstance(model, _TurnGuardModel)
@@ -153,6 +214,7 @@ def test_get_model_uses_grok_responses(monkeypatch: pytest.MonkeyPatch) -> None:
         assert isinstance(logged, request_log.RequestLoggingModel)
         assert isinstance(logged._inner, _GrokResponsesModel)
     finally:
+        llm_probe.reset()
         loader._cached = None
 
 

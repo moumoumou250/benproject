@@ -139,9 +139,7 @@ def prepare_run(args: argparse.Namespace) -> dict[str, Any]:
 
     if diff.instruction_block:
         instruction = (
-            f"{diff.instruction_block}\n\n{instruction}"
-            if instruction
-            else diff.instruction_block
+            f"{diff.instruction_block}\n\n{instruction}" if instruction else diff.instruction_block
         )
 
     prepared = {
@@ -303,12 +301,23 @@ async def preflight_request(
         ) from None
 
 
-async def preflight_model_connection(model: str, *, settings: Settings | None = None) -> None:
+async def preflight_model_connection(
+    model: str, *, settings: Settings | None = None, reuse: bool = False
+) -> None:
     """启动沙箱前先做一次最小往返，让错误的 key/base/model 立刻暴露。
 
     走 :class:`BenProvider` 与正式运行同一路由（含 ``厂商/模型`` 前缀、
     extra_headers/extra_body），因此能提前发现只在真实调用路径上出现的错误。
+
+    端点若明确拒绝 OpenAI Responses（404/405，或正文写明不支持），不再使用
+    OpenAI Responses 客户端：Grok 订阅改走同一代理的 chat completions；
+    其他模型直接失败，提示换掉 OpenAI 路由。``reuse=True`` 时同一模型
+    已成功自检过就跳过，避免 TUI 与 runner 各打一发。
     """
+    from Ben.config import grok_build, llm_probe
+
+    if reuse and llm_probe.was_probed(model):
+        return
     if settings is None:
         from Ben.config import load_settings
 
@@ -320,14 +329,45 @@ async def preflight_model_connection(model: str, *, settings: Settings | None = 
 
     configure_sdk_model_defaults(settings)
     provider_model = BenProvider().get_model(model)
-    await preflight_request(
-        provider_model,
-        model_name=model,
-        extra_headers=settings.llm.extra_headers,
-        extra_body=settings.llm.extra_body,
-        timeout=settings.llm.preflight_timeout,
-        api_base_setting="LLM_API_BASE",
-    )
+    try:
+        await preflight_request(
+            provider_model,
+            model_name=model,
+            extra_headers=settings.llm.extra_headers,
+            extra_body=settings.llm.extra_body,
+            timeout=settings.llm.preflight_timeout,
+            api_base_setting="LLM_API_BASE",
+        )
+    except Exception as exc:
+        if not llm_probe.is_openai_unsupported(exc):
+            raise
+        if llm_probe.skip_openai() or grok_build.subscription_model(model) is None:
+            raise RuntimeError(
+                f"{model} 不支持 OpenAI 接口，已停止使用 OpenAI 客户端。"
+                "请把 LLM_MODEL 换成带厂商前缀的路由（例如 moonshot/、openrouter/）。"
+            ) from exc
+        llm_probe.mark_skip_openai()
+        logger.warning(
+            "LLM 自检：%s 不支持 OpenAI Responses，停止使用 OpenAI 客户端，改走 chat completions",
+            model,
+        )
+        try:
+            await preflight_request(
+                BenProvider().get_model(model),
+                model_name=model,
+                extra_headers=settings.llm.extra_headers,
+                extra_body=settings.llm.extra_body,
+                timeout=settings.llm.preflight_timeout,
+                api_base_setting="LLM_API_BASE",
+            )
+        except Exception as retry_exc:
+            if not llm_probe.is_openai_unsupported(retry_exc):
+                raise
+            raise RuntimeError(
+                f"{model} 的 chat completions 也不接受请求，已停止使用 OpenAI 客户端。"
+                "请把 LLM_MODEL 换成带厂商前缀的路由（例如 moonshot/、openrouter/）。"
+            ) from retry_exc
+    llm_probe.mark_probed(model)
 
 
 def telemetry_start(args: argparse.Namespace) -> None:  # noqa: ARG001

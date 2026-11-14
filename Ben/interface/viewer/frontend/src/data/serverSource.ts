@@ -84,8 +84,29 @@ export interface LoadedRun {
 
 async function getJson(path: string): Promise<unknown> {
   const res = await fetch(path, { cache: "no-store" });
-  if (!res.ok) throw new Error(`${path} responded ${res.status}`);
-  return res.json();
+  const body = await res.text();
+  if (body.trimStart().startsWith("<")) {
+    throw new Error("接口返回了页面而不是 JSON。请通过启动控制台时打印的完整链接打开。");
+  }
+  let parsed: unknown = null;
+  if (body) {
+    try {
+      parsed = JSON.parse(body);
+    } catch {
+      throw new Error(`${path} 返回的不是 JSON`);
+    }
+  }
+  if (!res.ok) {
+    const message =
+      parsed && typeof parsed === "object" && "error" in parsed
+        ? String((parsed as { error?: unknown }).error ?? "")
+        : "";
+    if (res.status === 403 || message === "forbidden") {
+      throw new Error("会话已失效，请使用启动终端的完整链接重新打开。");
+    }
+    throw new Error(message || `${path} responded ${res.status}`);
+  }
+  return parsed;
 }
 
 /** Build a ``?run=<name>`` suffix for run-scoped data endpoints. */

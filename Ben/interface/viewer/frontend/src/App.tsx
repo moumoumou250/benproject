@@ -71,9 +71,17 @@ export default function App() {
 
   // Live polling, scoped to the active run. Re-runs when the active run changes
   // so switching to a past run (?run=<name>) reloads its data; a finished run
-  // does a single full fetch and stops.
+  // does a single full fetch and stops. Wait until the run list answers: a
+  // locked session has no cookie, and /api/run would otherwise 403 on mount.
+  const sessionLocked = runs?.locked ?? null;
   const finishedRef = useRef(false);
   useEffect(() => {
+    if (sessionLocked === null) return;
+    if (sessionLocked) {
+      setRun(null);
+      setError("会话已失效，请使用启动终端的完整链接重新打开。");
+      return;
+    }
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     finishedRef.current = false;
@@ -135,7 +143,7 @@ export default function App() {
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [activeRun]);
+  }, [activeRun, sessionLocked]);
 
   const counts = useMemo(
     () => (run ? severityCounts(run.vulnerabilities) : null),

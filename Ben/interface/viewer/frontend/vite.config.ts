@@ -18,4 +18,15 @@ export default defineConfig({
     outDir: "../static",
     emptyOutDir: true,
   },
+  // Dev server only. The Python console serves /api and the built files on
+  // the same origin; Vite does not, so an unproxied /api/* falls through to
+  // index.html and response.json() throws
+  // "Unexpected token '<' ... is not valid JSON".
+  server: {
+    proxy: {
+      "/api": {
+        target: process.env.BEN_VIEWER_ORIGIN ?? "http://127.0.0.1:8765",
+      },
+    },
+  },
 });

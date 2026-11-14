@@ -76,7 +76,7 @@ def _target_text(targets_info: list[dict[str, Any]]) -> Text:
     text.append("目标", style="dim")
     text.append("  ")
     if not targets_info:
-        text.append("（白名单首项）", style="white")
+        text.append("（.env 白名单首项）", style="white")
         return text
     if len(targets_info) == 1:
         text.append(str(targets_info[0].get("original", "")), style="bold white")

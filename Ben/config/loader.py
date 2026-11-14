@@ -38,6 +38,9 @@ def load_settings(*, require_api_key: bool = False) -> Settings:
     """Resolve settings from env + JSON file + defaults. Memoized.
 
     Precedence: env vars win, then the JSON file, then field defaults.
+    ``ALLOWED_TARGETS`` is the exception: it is read only from the env file
+    (project ``.env``, or ``BEN_ENV_FILE`` when that switch selects another
+    file). Process environment and ``cli-config.json`` cannot replace it.
 
     ``require_api_key`` 是 Ben 兼容参数（interface 启动路径使用）：为 True
     时在返回前校验 ``llm.api_key`` 非空，缺失则抛 ``ValueError``。memoized
@@ -86,7 +89,7 @@ def persist_current() -> None:
     target = _override or _DEFAULT_PATH
     target.parent.mkdir(parents=True, exist_ok=True)
 
-    env_block = _drop_stale_llm_connection(_read_env_block(target))
+    env_block = _drop_target_overrides(_drop_stale_llm_connection(_read_env_block(target)))
     for sub_name in type(s).model_fields:
         sub_model = getattr(s, sub_name)
         if not isinstance(sub_model, BaseModel):
@@ -123,7 +126,7 @@ def _read_json_overrides(path: Path) -> dict[str, dict[str, Any]]:
     Only includes keys whose env var is NOT already set, so env always
     wins over the persisted file.
     """
-    env_block_upper = _drop_stale_llm_connection(_read_env_block(path))
+    env_block_upper = _drop_target_overrides(_drop_stale_llm_connection(_read_env_block(path)))
     if not env_block_upper:
         return {}
     env_present = {k.upper() for k in os.environ}
@@ -189,6 +192,17 @@ def _drop_stale_llm_connection(env_block: dict[str, Any]) -> dict[str, Any]:
         return env_block
     stale = {alias for aliases in linked_aliases for alias in aliases}
     return {k: v for k, v in env_block.items() if k not in stale}
+
+
+# 授权目标只认 env 文件。JSON 里的同名键既不能覆盖运行配置，也不能在
+# persist 时被原样写回，避免一份旧 cli-config 继续充当第二配置源。
+_TARGET_CONFIG_KEYS = frozenset({"ALLOWED_TARGETS"})
+
+
+def _drop_target_overrides(env_block: dict[str, Any]) -> dict[str, Any]:
+    if not any(key in env_block for key in _TARGET_CONFIG_KEYS):
+        return env_block
+    return {key: value for key, value in env_block.items() if key not in _TARGET_CONFIG_KEYS}
 
 
 def _read_env_block(path: Path) -> dict[str, Any]:

@@ -273,6 +273,21 @@ def _llm_usage(report_state: Any) -> dict[str, Any]:
     return usage if isinstance(usage, dict) else {}
 
 
+def _subscription_label() -> str:
+    """订阅来源的展示名。Grok Build 与 ChatGPT 共用 auth_mode=subscription。"""
+    from Ben.config import codex, grok_build
+
+    try:
+        model = load_settings().llm.model
+    except Exception:  # noqa: BLE001 - 展示层不得因配置读取失败而中断
+        return "订阅"
+    if grok_build.subscription_model(model):
+        return "Grok Build"
+    if codex.subscription_model(model):
+        return "ChatGPT 订阅"
+    return "订阅"
+
+
 def is_subscription_run(report_state: Any) -> bool:
     """本次运行是否走订阅制（不计费）。
 
@@ -394,7 +409,7 @@ def build_live_stats_text(report_state: Any) -> Text:
     stats_text.append(str(model), style="white")
     if is_subscription_run(report_state):
         stats_text.append("  ·  ", style="dim white")
-        stats_text.append("ChatGPT 订阅", style="#22c55e")
+        stats_text.append(_subscription_label(), style="#22c55e")
     stats_text.append("\n")
 
     reports = list(getattr(report_state, "vulnerability_reports", None) or [])
@@ -421,7 +436,7 @@ def build_tui_stats_text(report_state: Any) -> Text:
     subscription = is_subscription_run(report_state)
     if subscription:
         stats_text.append("\n")
-        stats_text.append("ChatGPT 订阅", style="#22c55e")
+        stats_text.append(_subscription_label(), style="#22c55e")
 
     usage = _llm_usage(report_state)
     if usage and _int_stat(usage, "total_tokens") > 0:

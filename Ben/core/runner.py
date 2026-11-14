@@ -66,8 +66,10 @@ from agents.items import (
 from Ben.agents.factory import build_agent, make_child_factory
 from Ben.agents.prompt import build_system_prompt_context
 from Ben.config import Settings, configure_sdk_model_defaults
+from Ben.config.settings import require_allowed_targets
 from Ben.config.models import (
     BenProvider,
+    active_api_route,
     model_supports_images,
     supports_strict_tool_schemas,
 )
@@ -148,6 +150,7 @@ def _persist_mcp_status(roster: list[dict[str, Any]]) -> None:
 @dataclass
 class ToolInvocation:
     """一次工具调用的完整记录（用于轨迹与报告）。"""
+
     name: str
     arguments: str
     output: str
@@ -156,6 +159,7 @@ class ToolInvocation:
 @dataclass
 class AgentRunResult:
     """一次 Agent 任务的最终交付。"""
+
     target: str
     report_text: str
     report_path: Path
@@ -317,9 +321,7 @@ def _check_target_allowed(target: str, allowed: tuple[str, ...]) -> None:
                 else f"{p.scheme}://{p.hostname}"
             )
     if origin not in allowed_origins:
-        raise ValueError(
-            f"目标 {origin} 不在授权白名单 {sorted(allowed_origins)} 内，拒绝启动"
-        )
+        raise ValueError(f"目标 {origin} 不在授权白名单 {sorted(allowed_origins)} 内，拒绝启动")
 
 
 def _warn_public_whitelist(allowed: tuple[str, ...]) -> None:
@@ -336,14 +338,12 @@ def _warn_public_whitelist(allowed: tuple[str, ...]) -> None:
             continue  # 域名无法离线判定公私网，跳过
         if ip.is_global:
             logger.warning(
-                "授权白名单包含公网地址 %s：请确认持有该目标的书面授权，"
-                "公网测试风险自负", item,
+                "授权白名单包含公网地址 %s：请确认持有该目标的书面授权，公网测试风险自负",
+                item,
             )
 
 
-def _check_targets_allowed(
-    targets_info: list[dict[str, Any]], allowed: tuple[str, ...]
-) -> None:
+def _check_targets_allowed(targets_info: list[dict[str, Any]], allowed: tuple[str, ...]) -> None:
     """多目标授权校验：web/ip 目标逐一过白名单；源码类目标（白盒）跳过。
 
     域名目标在 infer_target_type 阶段已归一为 https://<domain> 的
@@ -359,9 +359,7 @@ def _check_targets_allowed(
             target_ip = details.get("target_ip", "")
             if target_ip == HOST_GATEWAY_HOSTNAME:
                 target_ip = "localhost"
-            allowed_hosts = {
-                urlsplit(item).hostname for item in allowed if urlsplit(item).hostname
-            }
+            allowed_hosts = {urlsplit(item).hostname for item in allowed if urlsplit(item).hostname}
             if target_ip not in allowed_hosts:
                 raise ValueError(
                     f"目标 IP {target_ip} 不在授权白名单 {sorted(allowed_hosts)} 内，拒绝启动"
@@ -579,19 +577,25 @@ class AgentRunner:
                             tool_name = getattr(func, "name", "")
                 logger.info(
                     "[agent %s][Turn %d/%d] 工具调用: %s → %s",
-                    agent_id, turn_counts[agent_id], max_turns,
+                    agent_id,
+                    turn_counts[agent_id],
+                    max_turns,
                     tool_name or "?",
                     _short_args(getattr(raw, "arguments", "") or ""),
                 )
             elif isinstance(item, ToolCallOutputItem):
                 logger.info(
                     "[agent %s][Turn %d/%d] 工具结果返回",
-                    agent_id, turn_counts.get(agent_id, 0), max_turns,
+                    agent_id,
+                    turn_counts.get(agent_id, 0),
+                    max_turns,
                 )
             elif isinstance(item, MessageOutputItem):
                 logger.info(
                     "[agent %s][Turn %d/%d] 模型输出文本消息",
-                    agent_id, turn_counts.get(agent_id, 0), max_turns,
+                    agent_id,
+                    turn_counts.get(agent_id, 0),
+                    max_turns,
                 )
             prev_item_type[agent_id] = item_type
 
@@ -611,11 +615,12 @@ class AgentRunner:
         logger.info("阶段 1/6: 校验目标")
         logger.info("=" * 60)
         targets_info = self.targets_info
+        allowed = require_allowed_targets(settings)
         if not targets_info:
-            # 单目标回退路径：与多目标改造前的行为完全一致。
+            # 单目标回退路径：只使用 .env 白名单首项，没有内置默认地址。
             if not target:
-                target = settings.allowed_targets[0]
-                logger.info("未指定目标，使用白名单首项：%s", target)
+                target = allowed[0]
+                logger.info("未指定目标，使用 .env 白名单首项：%s", target)
             targets_info = [
                 {
                     "type": "web_application",
@@ -623,7 +628,7 @@ class AgentRunner:
                     "original": target,
                 }
             ]
-        _check_targets_allowed(targets_info, settings.allowed_targets)
+        _check_targets_allowed(targets_info, allowed)
         # 主目标展示名：第一个 web 目标，否则 targets_info[0] 的 original。
         primary = next(
             (t for t in targets_info if t.get("type") == "web_application"),
@@ -631,12 +636,13 @@ class AgentRunner:
         )
         target = str(primary.get("original") or target or "")
         is_whitebox = is_whitebox_scan(targets_info)
-        is_diff_scoped = bool(
-            isinstance(self.diff_scope, dict) and self.diff_scope.get("active")
-        )
+        is_diff_scoped = bool(isinstance(self.diff_scope, dict) and self.diff_scope.get("active"))
         logger.info(
             "目标校验通过：%d 个目标（主目标 %s，whitebox=%s，diff_scope=%s）",
-            len(targets_info), target, is_whitebox, is_diff_scoped,
+            len(targets_info),
+            target,
+            is_whitebox,
+            is_diff_scoped,
         )
 
         # === 阶段 2: 配置 SDK 全局默认值 ===
@@ -645,11 +651,20 @@ class AgentRunner:
         logger.info("=" * 60)
         configure_sdk_model_defaults(settings)
         resolved_model = settings.llm.model
+        if resolved_model:
+            from Ben.interface.cli.scan_setup import preflight_model_connection
+
+            logger.info("LLM 自检：%s", resolved_model)
+            await preflight_model_connection(resolved_model, settings=settings, reuse=True)
         strict_tool_schemas = supports_strict_tool_schemas(resolved_model)
         supports_images = model_supports_images(resolved_model)
         if not supports_images:
             logger.info("模型 %s 不支持图片输入，跳过图片工具", resolved_model)
-        logger.info("SDK 配置完成：model=%s, api_route=chat_completions", resolved_model)
+        logger.info(
+            "SDK 配置完成：model=%s, api_route=%s",
+            resolved_model,
+            active_api_route(resolved_model or "", settings),
+        )
 
         # === 阶段 3: 创建 ReportState + AgentCoordinator + 水合磁盘状态 ===
         # 对齐 strix core/runner.py：agents.json 快照 + SQLite agents.db 落在
@@ -716,13 +731,9 @@ class AgentRunner:
             try:
                 snap = json.loads(agents_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError) as exc:
-                raise RuntimeError(
-                    f"无法恢复 run {run_name}：agents.json 不可读：{exc}"
-                ) from exc
+                raise RuntimeError(f"无法恢复 run {run_name}：agents.json 不可读：{exc}") from exc
             if not agents_db.exists():
-                raise RuntimeError(
-                    f"无法恢复 run {run_name}：缺少 SDK 会话数据库 {agents_db}"
-                )
+                raise RuntimeError(f"无法恢复 run {run_name}：缺少 SDK 会话数据库 {agents_db}")
             await coordinator.restore(snap)
             for aid, parent in coordinator.parent_of.items():
                 if parent is None:
@@ -818,9 +829,7 @@ class AgentRunner:
 
         mcp_registry = McpRegistry()
         try:
-            mcp_requests = [
-                McpConnectionRequest(config=config) for config in load_mcp_configs()
-            ]
+            mcp_requests = [McpConnectionRequest(config=config) for config in load_mcp_configs()]
             if mcp_requests:
                 for request in mcp_requests:
                     mcp_registry.register(request)
@@ -988,7 +997,9 @@ class AgentRunner:
                 logger.info("=" * 60)
                 logger.info(
                     "阶段 6/6: 启动 run_agent_loop（model=%s, max_turns=%d, root=%s）",
-                    resolved_model, max_turns, root_id,
+                    resolved_model,
+                    max_turns,
+                    root_id,
                 )
                 logger.info("=" * 60)
 
@@ -1201,7 +1212,9 @@ class AgentRunner:
         logger.info("=" * 60)
         logger.info(
             "循环结束（%s），共 %d 次工具调用，耗时 %.1fs",
-            stopped_reason, len(invocations), elapsed,
+            stopped_reason,
+            len(invocations),
+            elapsed,
         )
         logger.info("=" * 60)
 
@@ -1365,9 +1378,7 @@ class AgentRunner:
                     if isinstance(out, dict):
                         missing = out.get("missing_security_headers", [])
                         if missing:
-                            security_findings.append(
-                                f"- {inv.arguments}: 缺失安全响应头 {missing}"
-                            )
+                            security_findings.append(f"- {inv.arguments}: 缺失安全响应头 {missing}")
                 except (json.JSONDecodeError, TypeError):
                     pass
 
@@ -1465,9 +1476,7 @@ class AgentRunner:
             "agents": agents_summary or [],
         }
         trace_path = reports_dir / f"trace_{stamp}.json"
-        trace_path.write_text(
-            json.dumps(trace, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        trace_path.write_text(json.dumps(trace, ensure_ascii=False, indent=2), encoding="utf-8")
         logger.info("报告已保存：%s", report_path)
         logger.info("轨迹已保存：%s", trace_path)
         return report_path, trace_path

@@ -336,9 +336,18 @@ def build_openai_client() -> AsyncOpenAI:
         for name, value in client_headers().items():
             request.headers[name] = value
 
+    # 代理宣告 ALPN h2。HTTP/1.1 下每个 agent 各开一条 TLS，经本地转发
+    # （常见 198.18.0.0/15 fake-ip）时第二条握手会 ConnectError，SDK 记成
+    # "Error streaming response"。HTTP/2 让并发回合复用同一条连接。
+    try:
+        transport = httpx.AsyncHTTPTransport(retries=1, http2=True)
+    except ImportError:
+        logger.warning("未安装 h2，Grok 客户端退回 HTTP/1.1")
+        transport = httpx.AsyncHTTPTransport(retries=1)
     http_client = httpx.AsyncClient(
         timeout=httpx.Timeout(600.0, connect=30.0),
         event_hooks={"request": [_auth_hook]},
+        transport=transport,
     )
     request_log.observe_http_client(http_client)
     return AsyncOpenAI(

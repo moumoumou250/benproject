@@ -48,7 +48,7 @@ export function ScanForm({
               type="text"
               inputMode="url"
               required
-              placeholder="https://example.com 或 117.72.199.2:3000"
+              placeholder="https://example.com 或 target.example:8080"
               value={target}
               onChange={(e) => setTarget(e.target.value)}
               disabled={busy}

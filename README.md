@@ -160,7 +160,7 @@ notepad .env
 | `LLM_API_KEY` | 通用 API Key；带前缀模型会自动镜像到厂商变量（如 `MOONSHOT_API_KEY`） |
 | `LLM_MODEL` | 模型名。裸名走 `LLM_API_BASE` 端点；`厂商/模型` 走 LiteLLM 目录路由 |
 | `LLM_API_BASE` | OpenAI 兼容端点地址（模式 A 必填，模式 B 留空） |
-| `ALLOWED_TARGETS` | 授权目标白名单，逗号分隔；默认 `http://juice-shop:3000` |
+| `ALLOWED_TARGETS` | 授权目标白名单，逗号分隔，必填。只从项目根 `.env` 读取；未配置时拒绝启动，没有内置默认目标。示例：`http://target.example:8080` |
 | `MAX_AGENT_TURNS` | 最大决策轮数，防止无限循环，默认 12 |
 | `COMMAND_TIMEOUT` | 单条容器命令超时，默认 30 秒 |
 
@@ -192,8 +192,9 @@ docker run -d --name juice-shop --network benptnet -p 3000:3000 `
 ```
 
 浏览器打开 http://localhost:3000 确认靶场就绪。执行容器与靶场在同一专用网络，
-通过容器名 `http://juice-shop:3000` 互访；默认不挂载宿主机目录、不挂 Docker
-socket、不使用特权容器。
+通过容器名互访。若本次授权目标就是这个容器，把 `.env` 的 `ALLOWED_TARGETS`
+写成 `http://juice-shop:3000`。这只是本地靶场示例，程序不会在未配置时自动使用该地址。
+默认不挂载宿主机目录、不挂 Docker socket、不使用特权容器。
 
 ## 七、按顺序验证（建议逐步进行）
 
@@ -211,14 +212,15 @@ socket、不使用特权容器。
 ## 八、运行完整任务
 
 ```powershell
-# 对授权目标跑完整 Agent 循环（默认目标取白名单首项）
-.\.venv\Scripts\python.exe main.py http://juice-shop:3000/
+# 命令行 URL 必须落在 .env 的 ALLOWED_TARGETS 内。
+# 不传 URL 时使用该白名单的第一项；白名单为空则拒绝启动。
+.\.venv\Scripts\python.exe main.py http://target.example:8080/
 
 # 等价方式：直接运行包内入口
-.\.venv\Scripts\python.exe -m Ben.interface.main http://juice-shop:3000/
+.\.venv\Scripts\python.exe -m Ben.interface.main http://target.example:8080/
 
 # 任务结束保留执行容器（默认自动删除）
-.\.venv\Scripts\python.exe main.py http://juice-shop:3000/ --keep-container
+.\.venv\Scripts\python.exe main.py http://target.example:8080/ --keep-container
 
 # 输出 DEBUG 级详细日志
 .\.venv\Scripts\python.exe main.py -v
@@ -238,6 +240,8 @@ socket、不使用特权容器。
 
 ## 十、安全约束
 
+- 授权目标只来自项目根 `.env` 的 `ALLOWED_TARGETS`。未配置时明确报错并拒绝启动，
+  不使用任何内置默认地址；`cli-config.json` 与进程环境变量不能覆盖该值；
 - 仅测试授权白名单内目标；目标 origin 在启动时校验一次，exec_command 每条命令
   再逐主机校验一次（urlsplit 解析，userinfo/整数 IP 变形不生效；含 shell 变量或
   命令替换的网络命令一律拒绝，防止绕过）；

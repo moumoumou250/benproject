@@ -455,32 +455,34 @@ def _normalize_host(host: str) -> str:
         return host
 
 
-def _extract_hosts(command: str, *, net_context: bool = True) -> set[str]:
-    """从命令字符串中提取全部网络目标（URL 主机、域名、IPv4）。
+def _segment_uses_net_client(segment: str) -> bool:
+    tokens = [tok for tok in re.split(r"\s+", segment) if tok]
+    return any(_is_net_client_name(tok.strip("\"';")) for tok in tokens)
 
-    URL 一律经 urlsplit 取 hostname：userinfo（``http://a@evil.com/``）、
-    端口、路径不会干扰主机判定；整数/十六进制 IP 归一化为点分十进制。
 
-    ``net_context=False``（命令未调用任何网络客户端）时只提取 URL 与 IPv4，
-    不把裸点号 token 当域名——否则 ``python main.py``、``cat notes.txt``、
-    ``nmap -oX out.xml`` 里的文件名会被误判成未授权目标而整条命令被拒。
+def _extract_hosts_from_segment(segment: str, *, bare_domains: bool) -> set[str]:
+    """从一个简单命令里取 URL 主机、IPv4，以及（仅网络客户端命令）裸域名。
 
-    裸主机名（无点号的 docker 内部服务名，如 juice-shop）不匹配域名规则，
-    不会被误判为外网目标。
+    裸域名不从相邻的 python/echo 片段里取。否则 ``curl`` 与
+    ``line.lower()``、``echo robots.txt`` 写在同一段脚本里时，
+    文件名和属性访问会被当成未授权主机整段拒绝。
+    URL 仍从每个片段提取，``echo http://evil.com`` 不会因此放行。
     """
     from urllib.parse import urlsplit
 
     hosts: set[str] = set()
     prev_token = ""
-
-    for raw_token in re.split(r"\s+", command):
+    for raw_token in re.split(r"\s+", segment):
         token = raw_token.strip("\"';|&()<>")
         if "=" in token and "://" not in token.split("=", 1)[0]:
             token = token.split("=", 1)[1].strip("\"'")
         if not token:
             prev_token = ""
             continue
-        # `-oX out.xml` 一类：文件名不是网络目标
+        # `-oX out.xml` 一类：文件名不是网络目标。
+        # ``from html.parser`` / ``import urllib.parse`` / ``python -m http.server``
+        # 的点号 token 是模块名，不是主机。
+        prior = prev_token
         skip_as_file = prev_token.lower() in _FILE_ARG_FLAGS
         prev_token = token
         if skip_as_file and "://" not in token:
@@ -503,9 +505,94 @@ def _extract_hosts(command: str, *, net_context: bool = True) -> set[str]:
                 token = maybe_host
         if _IPV4_RE.match(token):
             hosts.add(_normalize_host(token))
-        elif net_context and _DOMAIN_RE.match(token):
+        elif (
+            bare_domains
+            and prior not in {"from", "import", "-m"}
+            and _DOMAIN_RE.match(token)
+        ):
             hosts.add(token.lower())
     return hosts
+
+
+def _extract_hosts(command: str, *, net_context: bool = True) -> set[str]:
+    """从命令字符串中提取全部网络目标（URL 主机、域名、IPv4）。
+
+    URL 一律经 urlsplit 取 hostname：userinfo（``http://a@evil.com/``）、
+    端口、路径不会干扰主机判定；整数/十六进制 IP 归一化为点分十进制。
+
+    ``net_context=False``（命令未调用任何网络客户端）时只提取 URL 与 IPv4，
+    不把裸点号 token 当域名——否则 ``python main.py``、``cat notes.txt``、
+    ``nmap -oX out.xml`` 里的文件名会被误判成未授权目标而整条命令被拒。
+    有网络客户端时，裸域名也只从该客户端所在的简单命令里取。
+
+    裸主机名（无点号的 docker 内部服务名，如 juice-shop）不匹配域名规则，
+    不会被误判为外网目标。
+    """
+    if not net_context:
+        return _extract_hosts_from_segment(command, bare_domains=False)
+    hosts: set[str] = set()
+    for segment in _simple_commands(command):
+        hosts.update(
+            _extract_hosts_from_segment(
+                segment, bare_domains=_segment_uses_net_client(segment)
+            )
+        )
+    return hosts
+
+
+def _simple_commands(command: str) -> list[str]:
+    """按 ``;``、换行、管道和 ``&&`` 切开简单命令，引号内的分隔符不算。
+
+    ``cut -d'|'`` 的竖线在引号里，不能把一条 cut 切成两段。
+    """
+    parts: list[str] = []
+    buf: list[str] = []
+    quote: str | None = None
+    i = 0
+    while i < len(command):
+        char = command[i]
+        if quote is not None:
+            buf.append(char)
+            if char == quote and (quote == "'" or command[i - 1] != "\\"):
+                quote = None
+            i += 1
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            buf.append(char)
+            i += 1
+            continue
+        if char in {";", "\n", "|"} or (
+            char == "&" and i + 1 < len(command) and command[i + 1] == "&"
+        ):
+            parts.append("".join(buf))
+            buf = []
+            i += 2 if char == "&" else 1
+            continue
+        buf.append(char)
+        i += 1
+    parts.append("".join(buf))
+    return [part for part in parts if part.strip()]
+
+
+def _is_net_client_name(token: str) -> bool:
+    return _NET_CLIENT_RE.search(f" {token} ") is not None
+
+
+def _payload_flag(command: str) -> re.Match[str] | None:
+    """写负载标志只算在调用了网络客户端的那一条简单命令上。
+
+    ``curl … | cut -d'|'``、``tr -d`` 里的 ``-d`` 是分隔符/删除字符，
+    不是 curl 的 ``--data``。整段原文一次匹配会把这种只读命令误拒。
+    """
+    for segment in _simple_commands(command):
+        tokens = [tok for tok in re.split(r"\s+", segment) if tok]
+        if not any(_is_net_client_name(tok.strip("\"';")) for tok in tokens):
+            continue
+        payload = _PAYLOAD_SHORT_FLAG_RE.search(segment) or _PAYLOAD_LONG_FLAG_RE.search(segment)
+        if payload:
+            return payload
+    return None
 
 
 def _check_command_readonly(command: str) -> str | None:
@@ -513,7 +600,7 @@ def _check_command_readonly(command: str) -> str | None:
 
     仅在命令调用网络客户端（curl/wget/http/nc/socat）时生效：
     - 显式方法标志限 GET/HEAD/OPTIONS；
-    - 任何请求体/上传标志（-d/--data/-F/-T/--json/--post-*）一律拒绝。
+    - 该网络客户端自己的请求体/上传标志（-d/--data/-F/-T/--json/--post-*）一律拒绝。
     """
     if not _NET_CLIENT_RE.search(command):
         return None
@@ -531,7 +618,7 @@ def _check_command_readonly(command: str) -> str | None:
                 f"命令使用非只读 HTTP 方法 {method}"
                 f"（当前阶段仅允许 {'/'.join(sorted(_READ_METHODS))}）"
             )
-    payload = _PAYLOAD_SHORT_FLAG_RE.search(command) or _PAYLOAD_LONG_FLAG_RE.search(command)
+    payload = _payload_flag(command)
     if payload:
         return (
             f"命令包含写负载标志 {payload.group(0).strip()!r}"
@@ -568,7 +655,8 @@ def _check_command_allowed(command: str, allowed_targets: tuple[str, ...]) -> st
         return reason
 
     net_context = bool(_NET_CLIENT_RE.search(command))
-    if net_context and _INDIRECTION_RE.search(command):
+    # 只在网络客户端那一条简单命令上查变量。python 片段里的 `$` 不会改 curl 的主机。
+    if any(_INDIRECTION_RE.search(segment) for segment in _simple_commands(command) if _segment_uses_net_client(segment)):
         return "命令包含 shell 变量/命令替换，无法静态确认网络目标，请展开后重试"
 
     hosts = _extract_hosts(command, net_context=net_context) - _LOCAL_HOSTS

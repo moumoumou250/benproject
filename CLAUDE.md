@@ -41,7 +41,7 @@ python main.py --selftest-tools      # real HTTP probe from inside the container
 python main.py --selftest-llm        # real model call — needs .env
 
 # A scan; README §八 has the full flag list
-python main.py http://juice-shop:3000/          # interactive Go TUI when a terminal is attached
+python main.py http://target.example:8080/    # URL 必须在 .env 的 ALLOWED_TARGETS 内；未配置则拒绝启动
 python main.py -n -t <url> -m quick --max-turns 20 --max-budget 1 --instruction "..."
 python main.py -r <run_name>                    # resume a prior run from strix_runs/<name>/run.json
 

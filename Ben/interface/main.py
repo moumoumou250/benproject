@@ -1,8 +1,8 @@
 """BenProject 程序入口。
 
 用法：
-  # 正常任务（对授权目标跑完整 Agent 流程）
-  .venv/Scripts/python.exe main.py http://117.72.199.2:3000/
+  # 正常任务（URL 必须写在 .env 的 ALLOWED_TARGETS 里）
+  .venv/Scripts/python.exe main.py http://target.example:8080/
 
   # 多目标 / 白盒（本地源码 + 部署实例）
   .venv/Scripts/python.exe main.py -t ./my-project -t https://staging.example.com
@@ -34,7 +34,7 @@
   .venv/Scripts/python.exe main.py --selftest-tools
 
   # 任务结束保留执行容器（默认自动删除）
-  .venv/Scripts/python.exe main.py http://117.72.199.2:3000/ --keep-container
+  .venv/Scripts/python.exe main.py http://target.example:8080/ --keep-container
 
 模块协作（运行时各模块职责）：
   main.py (入口)
@@ -102,6 +102,13 @@ if _dotenv_path.exists():
     _sync_aliases(["LLM_MODEL", "BEN_LLM", "DEEPSEEK_MODEL"])
     _sync_aliases(["LLM_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY"])
     _sync_aliases(["LLM_API_BASE", "OPENAI_BASE_URL", "DEEPSEEK_BASE_URL"])
+
+    # 目标白名单只认 .env。进程里残留的 ALLOWED_TARGETS 不能覆盖文件。
+    _targets_raw = _env_file_vals.get("ALLOWED_TARGETS")
+    if _targets_raw is not None and str(_targets_raw).strip():
+        os.environ["ALLOWED_TARGETS"] = str(_targets_raw).strip()
+    else:
+        os.environ.pop("ALLOWED_TARGETS", None)
 
 from Ben.config import load_settings  # noqa: E402
 from Ben.interface.cli.arguments import parse_arguments  # noqa: E402
@@ -191,7 +198,13 @@ def _selftest_llm() -> int:
 def _selftest_tools() -> int:
     """工具层验证：用 SDK sandbox 在容器内执行一次 curl 检查。"""
     settings = load_settings(require_api_key=False)
-    target = settings.allowed_targets[0]
+    from Ben.config.settings import require_allowed_targets
+
+    try:
+        target = require_allowed_targets(settings)[0]
+    except ValueError as exc:
+        print(f"[FAIL] {exc}")
+        return 1
 
     import asyncio
     import docker as docker_sdk
@@ -287,7 +300,7 @@ def _run_task(args) -> int:
     resume_run_name = prepared["resume_run_name"]
 
     if not targets_info:
-        print("未指定目标，使用白名单首项（runner 内回退）")
+        print("未指定目标，使用 .env 中 ALLOWED_TARGETS 的第一项（runner 内回退）")
 
     # headless 实时视图（Ben.interface.cli.runner）内部构造 AgentRunner：
     # - 复用同一份 ReportState，漏洞发现即打印面板（对齐 strix 的 run_cli）；

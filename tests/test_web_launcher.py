@@ -48,7 +48,7 @@ def test_launch_without_shell_and_single_flight(tmp_path, monkeypatch):
         launcher.start({"target": "http://example.com"})
 
 
-@pytest.mark.parametrize("target", ["117.72.199.2", "117.72.199.2:3000", "example.com/path"])
+@pytest.mark.parametrize("target", ["203.0.113.10", "203.0.113.10:8080", "example.com/path"])
 def test_bare_target_uses_http(tmp_path, monkeypatch, target):
     process = Mock()
     process.poll.return_value = None

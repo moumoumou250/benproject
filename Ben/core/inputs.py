@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 from agents.model_settings import ModelSettings
 from openai.types.shared import Reasoning
 
+from Ben.config import grok_build
 from Ben.config.models import (
     DEFAULT_MODEL_RETRY,
     attribution_headers,
@@ -253,11 +254,14 @@ def make_model_settings(
     has_tools: bool = True,
 ) -> ModelSettings:
     headers = _request_headers(model_name, extra_headers)
+    # Grok Build 的 httpx 客户端已固定 600s。把 LLM_TIMEOUT 再传进
+    # responses.create(timeout=) 会把它盖掉，推理间隙一超过该值就 ReadTimeout。
+    effective_timeout = None if grok_build.subscription_model(model_name) else request_timeout
     model_settings = ModelSettings(
         parallel_tool_calls=parallel_tool_calls if has_tools else None,
         retry=DEFAULT_MODEL_RETRY,
         include_usage=True,
-        extra_args=request_timeout_extra_args(request_timeout),
+        extra_args=request_timeout_extra_args(effective_timeout),
         extra_headers=headers,
         extra_body=dict(extra_body) if extra_body else None,
     )

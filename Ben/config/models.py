@@ -11,6 +11,7 @@ import os
 import time
 import uuid
 from collections.abc import AsyncGenerator
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 
 from agents import (
@@ -39,7 +40,7 @@ from openai.types.responses.response_usage import ResponseUsage
 from openai.types.shared import Reasoning
 
 from Ben.agents.prompt import CACHE_POINT
-from Ben.config import codex, grok_build
+from Ben.config import codex, grok_build, llm_probe
 from Ben.config.loader import load_settings
 from Ben.config.tool_call_arguments import repair_input
 from Ben.config.tool_call_ids import TurnCallIdRewriter, dedupe_input
@@ -174,6 +175,15 @@ class _GrokResponsesModel(_CodexResponsesModel):
     """Responses model for the Grok Build proxy. Keeps xhigh; maps the privacy refusal."""
 
     def _codex_settings(self, model_settings: ModelSettings) -> ModelSettings:
+        # LLM_TIMEOUT 会经 extra_args 变成 responses.create(timeout=)，从而覆盖
+        # Grok 客户端自己的 600s。推理流经常超过 60s 没有新字节，httpx 记成
+        # ReadTimeout，回合被放弃；紧接着的重连再撞上 cli-chat-proxy 的 DNS
+        # 抖动，整次扫描就以 Connection error 收场。流的空闲和总时长仍由
+        # LLM_STREAM_*_TIMEOUT 管，这里只拿掉这次请求级覆盖。
+        extra = dict(model_settings.extra_args or {})
+        if "timeout" in extra:
+            extra.pop("timeout")
+            model_settings = replace(model_settings, extra_args=extra or None)
         overrides = ModelSettings(store=False)
         effort = self._reasoning_effort
         if effort and effort != "none":
@@ -611,7 +621,7 @@ class BenProvider(MultiProvider):
 
     ``api_key``/``base_url`` bind every route this provider resolves to one
     endpoint, for a secondary model (the dedupe judge) whose endpoint differs
-    from the main model's process-wide defaults.    """
+    from the main model's process-wide defaults."""
 
     def __init__(
         self,
@@ -664,31 +674,48 @@ class BenProvider(MultiProvider):
         if slug or grok_slug:
             # Subscription backends are always streamed; they have no
             # non-streaming mode to fall back to, so LLM_DISABLE_STREAMING
-            # does not apply here.
-            if grok_slug:
-                inner: Model = _GrokResponsesModel(
-                    grok_slug,
-                    grok_build.get_client(),
-                    reasoning_effort=llm.reasoning_effort,
+            # does not apply here. 自检若判定端点不接受 OpenAI Responses，
+            # Grok 改走同一代理上的 chat completions，并不再发 OpenAI 流式。
+            if grok_slug and llm_probe.skip_openai():
+                from agents.models.openai_chatcompletions import OpenAIChatCompletionsModel
+
+                model = _NonStreamingModel(
+                    request_log.RequestLoggingModel(
+                        OpenAIChatCompletionsModel(
+                            model=grok_slug,
+                            openai_client=grok_build.get_client(),
+                        ),
+                        model_name=grok_slug,
+                        provider="grok-build",
+                        base_url=grok_build.PROXY_BASE_URL,
+                    )
                 )
-                logged_name = grok_slug
-                provider_name = "grok-build"
-                base_url: str | None = grok_build.PROXY_BASE_URL
+                idle_timeout = first_event_timeout = total_timeout = None
             else:
-                inner = _CodexResponsesModel(
-                    slug or "",
-                    codex.get_subscription_client(),
-                    reasoning_effort=llm.reasoning_effort,
+                if grok_slug:
+                    inner: Model = _GrokResponsesModel(
+                        grok_slug,
+                        grok_build.get_client(),
+                        reasoning_effort=llm.reasoning_effort,
+                    )
+                    logged_name = grok_slug
+                    provider_name = "grok-build"
+                    base_url: str | None = grok_build.PROXY_BASE_URL
+                else:
+                    inner = _CodexResponsesModel(
+                        slug or "",
+                        codex.get_subscription_client(),
+                        reasoning_effort=llm.reasoning_effort,
+                    )
+                    logged_name = slug or ""
+                    provider_name = "openai-codex"
+                    base_url = None
+                model = request_log.RequestLoggingModel(
+                    inner,
+                    model_name=logged_name,
+                    provider=provider_name,
+                    base_url=base_url,
                 )
-                logged_name = slug or ""
-                provider_name = "openai-codex"
-                base_url = None
-            model: Model = request_log.RequestLoggingModel(
-                inner,
-                model_name=logged_name,
-                provider=provider_name,
-                base_url=base_url,
-            )
         else:
             model = super().get_model(model_name)
             resolved_name = model_name or llm.model or "unknown"
@@ -791,6 +818,19 @@ def configure_sdk_api_route(model_name: str, settings: Settings) -> None:
 
 
 _RESPONSES_ENDPOINT = "/v1/responses"
+
+
+def active_api_route(model_name: str, settings: Settings) -> str:
+    """扫描实际会走的接口，供启动日志使用。
+
+    订阅后端默认是 Responses。自检判定 OpenAI 不被接受后，Grok 改为
+    chat completions，不再使用 OpenAI Responses。
+    """
+    if llm_probe.skip_openai() and grok_build.subscription_model(model_name):
+        return "chat_completions"
+    if grok_build.subscription_model(model_name) or codex.subscription_model(model_name):
+        return "responses"
+    return resolve_api_type(model_name, settings)
 
 
 def resolve_api_type(model_name: str, settings: Settings) -> ApiType:

@@ -11,6 +11,7 @@ from rich.panel import Panel
 from rich.text import Text
 
 from Ben.config import codex, grok_build, load_settings
+from Ben.config.settings import MISSING_ALLOWED_TARGETS
 
 
 logger = logging.getLogger(__name__)
@@ -19,6 +20,9 @@ logger = logging.getLogger(__name__)
 def _missing_required_vars() -> list[str]:
     settings = load_settings()
     missing: list[str] = []
+    targets = getattr(settings, "allowed_targets", None)
+    if targets is not None and not targets:
+        missing.append("ALLOWED_TARGETS")
     if not settings.llm.model:
         missing.append("LLM_MODEL")
     if codex.subscription_model(settings.llm.model):
@@ -69,9 +73,11 @@ def validate_environment() -> None:
         error_text.append(f"• {var}", style="bold yellow")
         error_text.append(" is not set\n", style="white")
     error_text.append(
-        "\nSet them in .env (LLM_MODEL / LLM_API_KEY / LLM_API_BASE) or via the shell.\n",
+        "\nSet them in .env (LLM_MODEL / LLM_API_KEY / LLM_API_BASE).\n",
         style="dim white",
     )
+    if "ALLOWED_TARGETS" in missing:
+        error_text.append("\n" + MISSING_ALLOWED_TARGETS + "\n", style="white")
     console.print("\n")
     console.print(
         Panel(
