@@ -406,4 +406,8 @@ def subscription_model(model_name: str | None) -> str | None:
 
 
 def auth_mode(model_name: str | None) -> str:
-    return "subscription" if subscription_model(model_name) else "api_key"
+    from Ben.config import grok_build
+
+    if subscription_model(model_name) or grok_build.subscription_model(model_name):
+        return "subscription"
+    return "api_key"

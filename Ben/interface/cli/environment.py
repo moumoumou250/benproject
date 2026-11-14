@@ -10,7 +10,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
 
-from Ben.config import codex, load_settings
+from Ben.config import codex, grok_build, load_settings
 
 
 logger = logging.getLogger(__name__)
@@ -24,6 +24,10 @@ def _missing_required_vars() -> list[str]:
     if codex.subscription_model(settings.llm.model):
         if not codex.is_authenticated():
             missing.append("ChatGPT login: run ben auth login chatgpt")
+        return missing
+    if grok_build.subscription_model(settings.llm.model):
+        if not grok_build.is_authenticated():
+            missing.append("Grok Build login: run grok login")
         return missing
     if not settings.llm.api_key and not settings.llm.vendor_key_sufficient():
         missing.append("LLM_API_KEY")

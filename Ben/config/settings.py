@@ -379,7 +379,7 @@ class Settings(_BenSettings):
 
     # --- Docker 执行器（Ben 特有扁平字段）---
     executor_image: str = Field(
-        default="ghcr.io/usestrix/strix-sandbox:1.3.0",
+        default="ghcr.io/usestrix/strix-sandbox:1.4.0",
         validation_alias=AliasChoices("EXECUTOR_IMAGE"),
     )
     executor_network: str = Field(
@@ -423,9 +423,9 @@ class Settings(_BenSettings):
                 "缺少模型配置：.env 中设置 LLM_MODEL"
                 "（OpenAI 兼容端点写裸模型名；多厂商路由写 厂商/模型，如 moonshot/kimi-k2.6）"
             )
-        from Ben.config.codex import subscription_model
+        from Ben.config.grok_build import skips_api_key
 
-        if not subscription_model(self.llm.model) and not self.llm.api_key and not self.llm.vendor_key_sufficient():
+        if not skips_api_key(self.llm.model) and not self.llm.api_key and not self.llm.vendor_key_sufficient():
             problems.append(
                 "缺少 API Key：.env 中设置 LLM_API_KEY，"
                 "或使用带前缀模型并配置厂商专属变量（如 MOONSHOT_API_KEY）"

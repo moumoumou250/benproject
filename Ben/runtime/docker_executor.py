@@ -82,7 +82,7 @@ class DockerExecutor:
     def __init__(
         self,
         *,
-        image: str = "ghcr.io/usestrix/strix-sandbox:1.3.0",
+        image: str = "ghcr.io/usestrix/strix-sandbox:1.4.0",
         network: str = "benptnet",
         container_name: str = "benpt-executor",
         keep_alive_command: Sequence[str] = ("sleep", "infinity"),

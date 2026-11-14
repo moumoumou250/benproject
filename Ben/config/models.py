@@ -39,7 +39,7 @@ from openai.types.responses.response_usage import ResponseUsage
 from openai.types.shared import Reasoning
 
 from Ben.agents.prompt import CACHE_POINT
-from Ben.config import codex
+from Ben.config import codex, grok_build
 from Ben.config.loader import load_settings
 from Ben.config.tool_call_arguments import repair_input
 from Ben.config.tool_call_ids import TurnCallIdRewriter, dedupe_input
@@ -78,7 +78,9 @@ def _retry_statusless_provider_errors(context: RetryPolicyContext) -> bool:
     normalized = context.normalized
     if normalized.is_abort:
         return False
-    if codex.is_content_guardrail_error(context.error):
+    if codex.is_content_guardrail_error(context.error) or grok_build.is_privacy_mode_error(
+        context.error
+    ):
         return False
     return normalized.status_code is None
 
@@ -166,6 +168,31 @@ class _CodexResponsesModel(OpenAIResponsesModel):
                 result = close()
                 if inspect.isawaitable(result):
                     await result
+
+
+class _GrokResponsesModel(_CodexResponsesModel):
+    """Responses model for the Grok Build proxy. Keeps xhigh; maps the privacy refusal."""
+
+    def _codex_settings(self, model_settings: ModelSettings) -> ModelSettings:
+        overrides = ModelSettings(store=False)
+        effort = self._reasoning_effort
+        if effort and effort != "none":
+            match effort:
+                case "minimal":
+                    effort = "low"
+                case "max":
+                    effort = "xhigh"
+                case _:
+                    pass
+            overrides = overrides.resolve(ModelSettings(reasoning=Reasoning(effort=effort)))
+        return model_settings.resolve(overrides)
+
+    def _as_guardrail(self, exc: BaseException) -> grok_build.GrokBuildPrivacyError | None:
+        if isinstance(exc, grok_build.GrokBuildPrivacyError):
+            return exc
+        if grok_build.is_privacy_mode_error(exc):
+            return grok_build.GrokBuildPrivacyError(self.model, exc)
+        return None
 
 
 class _NonStreamingModel(Model):
@@ -629,23 +656,38 @@ class BenProvider(MultiProvider):
     def get_model(self, model_name: str | None) -> Model:
         llm = load_settings().llm
         slug = codex.subscription_model(model_name)
+        grok_slug = grok_build.subscription_model(model_name)
         # The settings use 0 for no bound.
         idle_timeout = float(llm.stream_idle_timeout) or None
         first_event_timeout = float(llm.stream_first_event_timeout) or None
         total_timeout = float(llm.stream_total_timeout) or None
-        if slug:
-            # The ChatGPT subscription backend is always streamed; it has no
+        if slug or grok_slug:
+            # Subscription backends are always streamed; they have no
             # non-streaming mode to fall back to, so LLM_DISABLE_STREAMING
             # does not apply here.
-            model: Model = request_log.RequestLoggingModel(
-                _CodexResponsesModel(
-                    slug,
+            if grok_slug:
+                inner: Model = _GrokResponsesModel(
+                    grok_slug,
+                    grok_build.get_client(),
+                    reasoning_effort=llm.reasoning_effort,
+                )
+                logged_name = grok_slug
+                provider_name = "grok-build"
+                base_url: str | None = grok_build.PROXY_BASE_URL
+            else:
+                inner = _CodexResponsesModel(
+                    slug or "",
                     codex.get_subscription_client(),
                     reasoning_effort=llm.reasoning_effort,
-                ),
-                model_name=slug,
-                provider="openai-codex",
-                base_url=None,
+                )
+                logged_name = slug or ""
+                provider_name = "openai-codex"
+                base_url = None
+            model: Model = request_log.RequestLoggingModel(
+                inner,
+                model_name=logged_name,
+                provider=provider_name,
+                base_url=base_url,
             )
         else:
             model = super().get_model(model_name)
@@ -726,7 +768,7 @@ def configure_sdk_model_defaults(settings: Settings) -> None:
     request_log.install()
     if settings.telemetry.run_record_timings:
         request_log.register_sink(record_llm_request)
-    if codex.subscription_model(llm.model):
+    if grok_build.skips_api_key(llm.model):
         return
     _configure_litellm_compatibility()
     _configure_attribution(llm.model)
@@ -1000,7 +1042,7 @@ def _configure_litellm_default(name: str, value: str) -> None:
 
 def uses_chat_completions_tool_schema(model_name: str, settings: Settings) -> bool:
     """Return whether the resolved SDK route can only receive JSON function tools."""
-    if codex.subscription_model(model_name):
+    if grok_build.skips_api_key(model_name):
         return False
     model = model_name.strip().lower()
     if "/" in model and not model.startswith("openai/"):
@@ -1077,7 +1119,7 @@ def routes_through_litellm(model_name: str | None) -> bool:
     OpenAI-compatible gateway in front of Claude.
     """
     name = (model_name or "").strip()
-    if not name or codex.subscription_model(name):
+    if not name or grok_build.skips_api_key(name):
         return False
     prefix, _, rest = name.partition("/")
     return bool(rest) and prefix.lower() not in {"openai", "any-llm"}

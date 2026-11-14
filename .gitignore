@@ -24,7 +24,7 @@ strix_runs/*
 # 工具缓存
 .pytest_cache/
 .ruff_cache/
-# pytest 的 --basetemp 产物
+# 有人用 --basetemp 把 pytest 临时目录放进仓库时留下的产物
 pytest-of-*/
 
 # 系统/编辑器临时文件

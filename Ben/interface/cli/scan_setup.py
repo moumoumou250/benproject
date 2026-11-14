@@ -217,11 +217,11 @@ def _header_candidates(
 
 
 def _is_subscription_model(model: str | None) -> bool:
-    """该模型是否走 ChatGPT 订阅（此时主 API Key 不参与请求）。"""
-    from Ben.config import codex
+    """该模型是否走订阅登录（此时主 API Key 不参与请求）。"""
+    from Ben.config.grok_build import skips_api_key
 
     try:
-        return codex.subscription_model(model) is not None
+        return skips_api_key(model)
     except Exception:  # noqa: BLE001 - 鉴权探测失败不应阻断启动校验
         return False
 
