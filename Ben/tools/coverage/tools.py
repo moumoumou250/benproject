@@ -221,6 +221,12 @@ def _record_impl(
         if duplicate is not None:
             existing_id, existing = duplicate
             owner = existing.get("agent_name") or "another agent"
+            try:
+                from Ben.core.orchestration_metrics import record_coverage_duplicate
+
+                record_coverage_duplicate()
+            except Exception:  # noqa: BLE001
+                logger.debug("coverage duplicate metric failed", exc_info=True)
             return {
                 "success": False,
                 "error": (
@@ -242,6 +248,12 @@ def _record_impl(
             return {"success": False, "error": "Could not allocate a coverage entry id"}
         _coverage_storage[entry_id] = entry
         _persist_locked()
+    try:
+        from Ben.core.orchestration_metrics import record_coverage_ok
+
+        record_coverage_ok()
+    except Exception:  # noqa: BLE001
+        logger.debug("coverage ok metric failed", exc_info=True)
     logger.info(
         "Coverage recorded: id=%s outcome=%s surface=%s",
         entry_id,

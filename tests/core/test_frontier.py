@@ -107,8 +107,11 @@ def test_render_frontier_block_includes_gaps_and_marker() -> None:
     assert block.startswith(FRONTIER_MARKER)
     assert "do not probe the target yourself" in block
     assert "/checkout" in block
-    assert "needs_follow_up" in block or "Coverage gaps" in block
+    assert "needs_follow_up" in block or "Coverage gaps" in block or "## Ready" in block
     assert "excluded=1" in block
+    assert "## Ready" in block
+    assert "## Claimed" in block
+    assert "suggest:" in block
     assert len(block) <= MAX_FRONTIER_CHARS
 
 

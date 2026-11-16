@@ -18,11 +18,22 @@ from Ben.core.hooks import (
     SubagentBudgetReservedError,
     recomputed_budget_flags,
 )
+from Ben.core.progress import reset_progress_tracker
+from Ben.core.supervisor import reset_supervisor_state
 from Ben.report.usage import LLMUsageLedger
 
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+
+@pytest.fixture(autouse=True)
+def _reset_orchestration_hooks_state() -> None:
+    reset_progress_tracker()
+    reset_supervisor_state()
+    yield
+    reset_progress_tracker()
+    reset_supervisor_state()
 
 
 def _make_hooks(max_budget: float | None) -> ReportUsageHooks:

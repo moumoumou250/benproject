@@ -106,6 +106,7 @@ from Ben.tools.todo.tools import (
     mark_todo_pending,
     update_todo,
 )
+from Ben.tools.verify.tool import record_verify_outcome, verify_finding
 from Ben.tools.wait_for_user.tool import wait_for_user
 from Ben.tools.web_search.tool import web_get_contents, web_search
 
@@ -1046,6 +1047,8 @@ _BASE_TOOLS: tuple[Tool, ...] = (
     delete_vulnerability_report,
     list_reports,
     get_report,
+    verify_finding,
+    record_verify_outcome,
     list_requests,
     view_request,
     repeat_request,
@@ -1289,6 +1292,9 @@ def build_agent(
     )
 
 
+_FACTORY_MODEL_SENTINEL = object()
+
+
 def make_child_factory(
     *,
     sandbox_session: Any,
@@ -1304,16 +1310,38 @@ def make_child_factory(
     coverage_tools: bool = True,
     prompts_dir: Path | None = None,
     model_name: Any = None,
+    root_strict_tool_schemas: bool | None = None,
+    root_supports_images: bool | None = None,
 ) -> Any:
     """Return the runner-owned builder used by ``spawn_child_agent``（对齐 strix）。
 
-    运行级参数（``scan_mode``、``sandbox_session``、``allowed_targets`` 等）
-    由闭包捕获，每个 child 继承扫描级配置，graph 工具无需感知 runner 内部。
-    ``model_name`` 即模型分层的子 agent 档位：runner 传入 build_flash_model
-    的产物（未配置 flash 档时为 None，子 agent 沿用 run 级旗舰模型）。
+    运行级参数由闭包捕获。``model_name`` 是默认 flash 档；每次 spawn 可
+    传 ``model_name=None``（旗舰 / general）或 ``use_root_capabilities=True``。
     """
 
-    def _factory(*, name: str, skills: list[str]) -> Agent[Any]:
+    default_model = model_name
+    default_strict = strict_tool_schemas
+    default_images = supports_images
+    flagship_strict = (
+        default_strict if root_strict_tool_schemas is None else root_strict_tool_schemas
+    )
+    flagship_images = (
+        default_images if root_supports_images is None else root_supports_images
+    )
+
+    def _factory(
+        *,
+        name: str,
+        skills: list[str],
+        model_name: Any = _FACTORY_MODEL_SENTINEL,
+        use_root_capabilities: bool = False,
+    ) -> Agent[Any]:
+        if model_name is _FACTORY_MODEL_SENTINEL:
+            resolved_model = default_model
+        else:
+            resolved_model = model_name
+        use_strict = flagship_strict if use_root_capabilities else default_strict
+        use_images = flagship_images if use_root_capabilities else default_images
         return build_agent(
             name=name,
             skills=skills,
@@ -1325,12 +1353,12 @@ def make_child_factory(
             is_diff_scoped=is_diff_scoped,
             interactive=interactive,
             parallel_tool_calls=parallel_tool_calls,
-            strict_tool_schemas=strict_tool_schemas,
+            strict_tool_schemas=use_strict,
             system_prompt_context=system_prompt_context,
-            supports_images=supports_images,
+            supports_images=use_images,
             coverage_tools=coverage_tools,
             prompts_dir=prompts_dir,
-            model_name=model_name,
+            model_name=resolved_model,
         )
 
     return _factory

@@ -31,7 +31,29 @@ def test_skill_catalog_descriptions_are_short() -> None:
     assert catalog
     for entries in catalog.values():
         for entry in entries:
-            assert len(entry["description"]) <= 80
+            assert len(entry["description"]) <= 40
+
+
+def test_rendered_skill_catalog_is_category_grouped() -> None:
+    """系统提示目录按类一行列名，不逐条贴 description（瘦身刀口 A）。"""
+    from Ben.agents.prompt import render_system_prompt
+
+    prompt = render_system_prompt(
+        is_root=False,
+        interactive=False,
+        scan_mode="deep",
+        report_tool=True,
+        coverage_tools=True,
+        system_prompt_context={"model": "test", "command_timeout": 30},
+    )
+    start = prompt.rfind("<available_skills>")
+    end = prompt.find("</available_skills>", start)
+    assert start >= 0 and end > start
+    block = prompt[start:end]
+    assert "- vulnerabilities:" in block
+    # 旧格式「category/name：长描述」不得再出现在目录块
+    assert "：BFLA testing" not in block
+    assert "vulnerabilities/xss：" not in block
 
 
 def test_create_vulnerability_report_description_is_slim() -> None:

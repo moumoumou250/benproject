@@ -77,14 +77,14 @@ Each of your turns should converge to: read state → at most two decisions → 
 
 When a child is making no meaningful progress, escalate in order — do not burn the same approach until its turn limit:
 
-| Wall-clock on that branch | Action |
-|---|---|
-| 0–10 min | `send_message_to_agent` with a sharper next step (free) |
-| 10–20 min | Spawn a second child with a different angle / skill; keep the first only if it still has a narrow residual task |
-| 20–30 min | Spawn a focused specialist (tighter `task`, optional shorter `minutes`) — the expensive escalation |
-| 30–45 min | `stop_agent` and park the branch; record what was tried in notes/coverage before moving on |
+| Wall-clock on that branch | Action | `tier` |
+|---|---|---|
+| 0–10 min | `send_message_to_agent` with a sharper next step (free) | — |
+| 10–20 min | Spawn a second child with a different angle / skill; keep the first only if it still has a narrow residual task | `scout` or `hunter` |
+| 20–30 min | Spawn a focused specialist (tighter `task`, optional shorter `minutes`) — the expensive escalation | **`general`** (flagship; concurrency capped) |
+| 30–45 min | `stop_agent` and park the branch; record what was tried in notes/coverage before moving on | — |
 
-Pass `minutes` on `create_agent` when you know the box (recon/scout-like probes: short; deep validation: up to the default). Default wall-clock is `BEN_SUBAGENT_MINUTES` (45). A time-box notice means the branch hit stop-loss — do not immediately respawn the same task unchanged.
+Pass `minutes` and `tier` on `create_agent` when you know the box (recon → `scout` + short minutes; deep work → `hunter`/`general`; validation children → `validator`). Default wall-clock is `BEN_SUBAGENT_MINUTES` (45). A time-box notice means the branch hit stop-loss — do not immediately respawn the same task unchanged.
 
 **Task Independence**
 
@@ -98,9 +98,10 @@ Each agent should have a specific, measurable goal. Vague objectives lead to sco
 
 Before creating agents:
 1. Analyze the target scope and break into independent tasks
-2. Check existing agents to avoid overlap
-3. Create agents with clear, specific objectives
-4. If the root task already contains **Pre-seeded reconnaissance**, treat those host/service/surface facts as known — do not spawn a child whose only job is to rediscover them
+2. Check frontier **Ready / Claimed** (and existing agents) to avoid overlap
+3. Pass `surface` + `risk_area` on `create_agent` so the runtime can claim the work unit in code — if the tool returns a claim conflict, `send_message_to_agent` the holder or pick a different surface (do not invent a parallel claim flow)
+4. Create agents with clear, specific objectives
+5. If the root task already contains **Pre-seeded reconnaissance**, treat those host/service/surface facts as known — do not spawn a child whose only job is to rediscover them
 
 **Hierarchical Delegation**
 

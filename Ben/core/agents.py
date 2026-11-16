@@ -373,11 +373,29 @@ class AgentCoordinator:
     async def set_status(
         self, agent_id: str, status: Status | str, *, error: str | None = None
     ) -> None:
+        became_terminal = False
         async with self._lock:
             if agent_id not in self.statuses:
                 return
+            prev = self.statuses.get(agent_id)
             self._set_status_locked(agent_id, status, error=error)
+            became_terminal = (
+                status in TERMINAL_STATUSES and prev not in TERMINAL_STATUSES
+            )
         logger.info("agent.status %s=%s", agent_id, status)
+        if became_terminal:
+            try:
+                from Ben.core.task_claims import release_for_agent
+
+                released = release_for_agent(agent_id)
+                if released:
+                    logger.info(
+                        "agent.status %s released %d claim(s)",
+                        agent_id,
+                        len(released),
+                    )
+            except Exception:  # noqa: BLE001
+                logger.exception("task claim release failed for %s", agent_id)
         await self._maybe_snapshot()
 
     def _set_status_locked(

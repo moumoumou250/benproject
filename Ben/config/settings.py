@@ -351,6 +351,17 @@ class RuntimeSettings(_BenSettings):
     backend: str = Field(default="docker", alias="BEN_RUNTIME_BACKEND")
     # 每个 agent 上下文中保留的截图/图片工具输出上限（0 = 不保留）
     max_context_images: int = Field(default=3, ge=0, alias="BEN_MAX_CONTEXT_IMAGES")
+    # Run 级 wall-clock（分钟）；None/未设/空串 = 不限。与轮数、美元预算并列。
+    scan_minutes: float | None = Field(default=None, alias="BEN_SCAN_MINUTES")
+
+    @field_validator("scan_minutes", mode="before")
+    @classmethod
+    def _empty_scan_minutes_to_none(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
 
 class TelemetrySettings(_BenSettings):

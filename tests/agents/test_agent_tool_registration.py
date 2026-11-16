@@ -176,7 +176,7 @@ def test_coverage_tools_can_be_turned_off() -> None:
     diff_off = build_agent(is_root=True, is_diff_scoped=True, coverage_tools=False)
     assert isinstance(diff_on.instructions, str)
     assert isinstance(diff_off.instructions, str)
-    assert "scan_modes/diff" in diff_on.instructions
+    # 片段正文进 prompt，路径名不一定保留
     assert "只测变更" in diff_on.instructions
     assert "覆盖率工具已启用" in diff_on.instructions
     assert "覆盖率工具已启用" not in diff_off.instructions

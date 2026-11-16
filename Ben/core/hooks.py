@@ -232,17 +232,45 @@ class ReportUsageHooks(RunHooks[dict[str, Any]]):
         self._pause_if_operator_paused(context)
         if self._budget_policy == "pause":
             self._pause_if_limited(context)
+        # wall-clock 到点：与预算并列的硬停
+        try:
+            from Ben.core.scan_clock import is_deadline_passed
+
+            if context.context.get("parent_id") is None and is_deadline_passed(
+                context.context
+            ):
+                raise BudgetExceededError("scan wall-clock (BEN_SCAN_MINUTES) exhausted")
+        except BudgetExceededError:
+            raise
+        except Exception:
+            logger.exception("scan clock deadline check failed")
         context.context[LLM_TURN_KEY] = int(context.context.get(LLM_TURN_KEY, 0)) + 1
         try:
             self._maybe_warn_turns(context, input_items)
             self._maybe_warn_soft_turn_limit(context, input_items)
             self._maybe_warn_budget(context, input_items)
+            self._maybe_warn_scan_time(context, input_items)
         except Exception:
             logger.exception("budget/turn warning injection failed")
         try:
             self._maybe_inject_frontier(context, input_items)
         except Exception:
             logger.exception("frontier status injection failed")
+        try:
+            self._maybe_inject_no_progress(context, input_items)
+        except Exception:
+            logger.exception("no-progress injection failed")
+        try:
+            self._write_heartbeat(context)
+        except Exception:
+            logger.exception("heartbeat write failed")
+        # 检查都过了再记 in-flight，避免 raise 路径泄漏计数。
+        try:
+            from Ben.core.supervisor import mark_llm_start
+
+            mark_llm_start()
+        except Exception:  # noqa: BLE001
+            pass
 
     def _maybe_inject_frontier(
         self,
@@ -261,6 +289,120 @@ class ReportUsageHooks(RunHooks[dict[str, Any]]):
         coordinator = coordinator_from_context(context.context)
         block = render_frontier_block(coordinator=coordinator)
         inject_or_replace_frontier(input_items, block, agent_id=agent_id)
+
+    def _maybe_warn_scan_time(
+        self,
+        context: RunContextWrapper[dict[str, Any]],
+        input_items: list[TResponseInputItem],
+    ) -> None:
+        if context.context.get("parent_id") is not None:
+            return
+        from Ben.core.scan_clock import remaining_fraction, time_status_line
+
+        line = time_status_line(context.context)
+        if not line:
+            return
+        frac_left = remaining_fraction(context.context)
+        stage = None
+        if frac_left is not None:
+            used = 1.0 - frac_left
+            stage = _crossed_stage(used, _TURN_WARN_BANDS)
+        parts = [line]
+        if stage is not None:
+            parts.append(
+                f"[{_urgency(stage)}] {_wrapup_directive(context, stage)}"
+            )
+        input_items.append({"role": "user", "content": " ".join(parts)})
+
+    def _maybe_inject_no_progress(
+        self,
+        context: RunContextWrapper[dict[str, Any]],
+        input_items: list[TResponseInputItem],
+    ) -> None:
+        if context.context.get("parent_id") is not None:
+            return
+        from Ben.core.orchestration_metrics import record_no_progress_injection
+        from Ben.core.progress import is_no_progress_latched, observe_progress
+
+        # 已注入过则不再叠写，避免每轮追加同一收尾指令。
+        if is_no_progress_latched():
+            return
+        coordinator = coordinator_from_context(context.context)
+        observation = observe_progress(coordinator=coordinator)
+        if not observation.get("should_wrap_up"):
+            return
+        record_no_progress_injection()
+        directive = _wrapup_directive(context, 2)
+        input_items.append(
+            {
+                "role": "user",
+                "content": (
+                    f"[NO-PROGRESS] stall_streak={observation.get('stall_streak')} "
+                    f"(threshold={observation.get('threshold')}). {directive}"
+                ),
+            }
+        )
+
+    def _write_heartbeat(self, context: RunContextWrapper[dict[str, Any]]) -> None:
+        if context.context.get("parent_id") is not None:
+            return
+        from Ben.core.progress import stall_streak
+        from Ben.core.scan_clock import remaining_minutes
+        from Ben.core.supervisor import write_heartbeat
+        from Ben.core.task_claims import list_claims
+
+        coordinator = coordinator_from_context(context.context)
+        in_flight = 0
+        coverage_open = 0
+        findings = 0
+        if coordinator is not None:
+            from Ben.core.agents import ACTIVE_STATUSES
+
+            in_flight = sum(
+                1
+                for aid, parent in coordinator.parent_of.items()
+                if parent is not None
+                and coordinator.statuses.get(aid) in ACTIVE_STATUSES
+            )
+        try:
+            from Ben.tools.coverage.tools import get_coverage_entries
+
+            coverage_open = sum(
+                1
+                for e in get_coverage_entries()
+                if e.get("outcome") == "needs_follow_up"
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from Ben.report import get_global_report_state
+
+            state = get_global_report_state()
+            if state is not None:
+                findings = len(state.get_existing_vulnerabilities() or [])
+        except Exception:  # noqa: BLE001
+            pass
+        spent = None
+        try:
+            from Ben.report import get_global_report_state
+
+            state = get_global_report_state()
+            if state is not None:
+                spent = state.get_total_llm_cost()
+        except Exception:  # noqa: BLE001
+            pass
+        write_heartbeat(
+            {
+                "turn": int(context.context.get(LLM_TURN_KEY, 0)),
+                "remaining_min": remaining_minutes(context.context),
+                "spent_usd": spent,
+                "in_flight": in_flight,
+                "coverage_open": coverage_open,
+                "findings": findings,
+                "claims": len(list_claims()),
+                "stall_streak": stall_streak(),
+            }
+        )
 
     def _pause_if_operator_paused(self, context: RunContextWrapper[dict[str, Any]]) -> None:
         coordinator = coordinator_from_context(context.context)
@@ -437,6 +579,12 @@ class ReportUsageHooks(RunHooks[dict[str, Any]]):
         agent: Agent[dict[str, Any]],
         response: ModelResponse,
     ) -> None:
+        try:
+            from Ben.core.supervisor import mark_llm_end
+
+            mark_llm_end()
+        except Exception:  # noqa: BLE001
+            pass
         report_state = get_global_report_state()
         if report_state is None:
             return

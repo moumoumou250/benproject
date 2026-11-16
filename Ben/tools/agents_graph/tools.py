@@ -500,6 +500,9 @@ async def create_agent(
     inherit_context: bool = False,
     skills: list[str] | None = None,
     minutes: float | None = None,
+    surface: str | None = None,
+    risk_area: str | None = None,
+    tier: Literal["scout", "hunter", "validator", "general"] = "hunter",
 ) -> str:
     """Spawn a specialist child agent to run in parallel.
 
@@ -554,6 +557,13 @@ async def create_agent(
             descendants). When omitted, ``BEN_SUBAGENT_MINUTES`` applies
             (default 45). On expiry the child is stopped gracefully and
             you get a time-box notice — escalate, re-scope, or park.
+        surface: Work-unit surface to claim (endpoint/route/component).
+            When ``BEN_CLAIM=1``, required with ``risk_area`` to avoid
+            sibling overlap — claim happens in code at spawn time.
+        risk_area: Risk domain for the claim (e.g. xss, authz).
+        tier: Model/role tier — ``scout`` / ``hunter`` / ``validator``
+            use the flash child model; ``general`` uses the flagship
+            model (concurrency capped by ``BEN_MAX_GENERALS``).
     """
     # 此处是工具从ctx.context取的三个东西
     inner = _ctx(ctx)
@@ -582,6 +592,17 @@ async def create_agent(
             ensure_ascii=False,
             default=str,
         )
+    valid_tiers = get_args(Literal["scout", "hunter", "validator", "general"])
+    if tier not in valid_tiers:
+        return json.dumps(
+            {
+                "success": False,
+                "error": f"tier must be one of {list(valid_tiers)}, got {tier!r}",
+                "agent_id": None,
+            },
+            ensure_ascii=False,
+            default=str,
+        )
 
     skill_list = list(skills or [])
     skill_error = validate_requested_skills(skill_list)
@@ -602,6 +623,9 @@ async def create_agent(
             skills=skill_list,
             parent_history=parent_history,
             minutes=minutes,
+            surface=surface,
+            risk_area=risk_area,
+            tier=tier,
         )
     except Exception as e:
         logger.exception("create_agent: scan runner failed to spawn child '%s'", name)
@@ -636,6 +660,7 @@ async def agent_finish(
     success: bool = True,
     report_to_parent: bool = True,
     final_recommendations: list[str] | None = None,
+    ruled_out_json: str | None = None,
 ) -> str:
     """Subagent termination — post a completion report to the parent.
 
@@ -685,6 +710,10 @@ async def agent_finish(
         final_recommendations: Optional next-step suggestions for the
             parent (e.g., "prioritize testing X", "spawn an agent to
             cover Y").
+        ruled_out_json: Optional JSON array of objects with ``surface``,
+            ``risk_area``, and ``evidence`` — persisted as coverage
+            ``outcome=ruled_out``. Free-text ``open_items`` are **not**
+            auto-written to the coverage ledger.
     """
     inner = _ctx(ctx)
     coordinator = coordinator_from_context(inner)
@@ -709,6 +738,46 @@ async def agent_finish(
             ensure_ascii=False,
             default=str,
         )
+
+    ruled_out_recorded: list[str] = []
+    ruled_out_items: list[Any] = []
+    if ruled_out_json and str(ruled_out_json).strip():
+        try:
+            parsed = json.loads(ruled_out_json)
+        except json.JSONDecodeError:
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": "ruled_out_json must be a JSON array of "
+                    "{surface, risk_area, evidence} objects",
+                },
+                ensure_ascii=False,
+            )
+        if isinstance(parsed, list):
+            ruled_out_items = parsed
+    if ruled_out_items:
+        from Ben.tools.coverage.tools import _record_impl
+
+        async with coordinator._lock:
+            agent_name = coordinator.names.get(me, me)
+        for item in ruled_out_items:
+            if not isinstance(item, dict):
+                continue
+            surface = str(item.get("surface") or "").strip()
+            risk = str(item.get("risk_area") or "").strip()
+            evidence = str(item.get("evidence") or "").strip()
+            if not surface or not risk or not evidence:
+                continue
+            result = _record_impl(
+                surface=surface,
+                risk_area=risk,
+                outcome="ruled_out",
+                evidence=evidence,
+                agent_id=me,
+                agent_name=agent_name if isinstance(agent_name, str) else None,
+            )
+            if result.get("success") and result.get("entry_id"):
+                ruled_out_recorded.append(str(result["entry_id"]))
 
     filed_reports = _filed_reports_by(me)
     filed_report_ids = [str(r.get("id")) for r in filed_reports]
@@ -765,6 +834,7 @@ async def agent_finish(
             "filed_report_ids": filed_report_ids,
             "findings_count": len(findings or []),
             "open_items_count": len(open_items or []),
+            "ruled_out_entry_ids": ruled_out_recorded,
             "has_recommendations": bool(final_recommendations),
         },
         ensure_ascii=False,

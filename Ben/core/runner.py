@@ -575,6 +575,15 @@ class AgentRunner:
                         func = getattr(raw, "function", None)
                         if func:
                             tool_name = getattr(func, "name", "")
+                # root 工具分布埋点（编排基线）；runner 启动后挂 _metrics_root_id。
+                root_for_metrics = getattr(self, "_metrics_root_id", None)
+                if root_for_metrics is not None and agent_id == root_for_metrics:
+                    try:
+                        from Ben.core.orchestration_metrics import record_root_tool_call
+
+                        record_root_tool_call(tool_name or "?")
+                    except Exception:  # noqa: BLE001
+                        pass
                 logger.info(
                     "[agent %s][Turn %d/%d] 工具调用: %s → %s",
                     agent_id,
@@ -748,15 +757,23 @@ class AgentRunner:
         coordinator.set_snapshot_path(agents_path)
         coordinator.root_finish_tool = "finish_scan"
 
+        from Ben.core.orchestration_metrics import bind_orchestration_metrics
+        from Ben.core.supervisor import bind_heartbeat
+        from Ben.core.task_claims import hydrate_task_claims_from_disk
         from Ben.tools.coverage.tools import hydrate_coverage_from_disk
         from Ben.tools.notes.tools import hydrate_notes_from_disk
         from Ben.tools.threat_model.tools import hydrate_threat_models_from_disk
         from Ben.tools.todo.tools import hydrate_todos_from_disk
+        from Ben.tools.verify.tool import hydrate_verify_from_disk
 
         hydrate_todos_from_disk(state_dir)
         hydrate_notes_from_disk(state_dir)
         hydrate_coverage_from_disk(state_dir)
         hydrate_threat_models_from_disk(state_dir)
+        hydrate_task_claims_from_disk(state_dir)
+        hydrate_verify_from_disk(state_dir)
+        bind_orchestration_metrics(run_dir)
+        bind_heartbeat(run_dir)
 
         # resume：从 agents.json 恢复快照并找回 root（对齐 strix runner
         # L341-383；agents.db 缺失说明会话历史已丢，无法续跑）。
@@ -992,8 +1009,11 @@ class AgentRunner:
                     prompts_dir=settings.prompts_dir,
                     # 模型分层：子 agent 的 flash 档模型（未配置时 None =
                     # 沿用 run 级旗舰模型）。resume 拉起的子 agent 走同一
-                    # 闭包，档位自动一致。
+                    # 闭包，档位自动一致。general 档 spawn 时传
+                    # model_name=None + use_root_capabilities。
                     model_name=flash_model,
+                    root_strict_tool_schemas=strict_tool_schemas,
+                    root_supports_images=supports_images,
                 )
 
                 async def spawn_child_agent(**kwargs):  # noqa: ANN202, ANN003
@@ -1048,6 +1068,13 @@ class AgentRunner:
                     ),
                     SUBAGENT_TURN_LIMITS_KEY: {},
                 }
+                from Ben.core.scan_clock import install_deadline, resolve_scan_minutes
+
+                scan_minutes = settings.runtime.scan_minutes
+                if scan_minutes is None:
+                    scan_minutes = resolve_scan_minutes()
+                install_deadline(context, minutes=scan_minutes)
+                self._metrics_root_id = root_id
 
                 root_session = open_agent_session(root_id, agents_db)
                 sessions_to_close.append(root_session)
@@ -1134,6 +1161,16 @@ class AgentRunner:
                         await asyncio.sleep(0.25)
 
                 pause_watcher = asyncio.create_task(watch_operator_pause())
+                from Ben.core.supervisor import run_supervisor
+
+                stall_timeout = float(settings.llm.stream_total_timeout or 600) * 2
+                supervisor_task = asyncio.create_task(
+                    run_supervisor(
+                        coordinator=coordinator,
+                        root_id=root_id,
+                        stall_timeout_s=stall_timeout,
+                    )
+                )
                 try:
                     result = await run_agent_loop(
                         agent=root_agent,
@@ -1157,22 +1194,35 @@ class AgentRunner:
                     result = None
                 finally:
                     pause_watcher.cancel()
+                    supervisor_task.cancel()
                     with contextlib.suppress(asyncio.CancelledError):
                         await pause_watcher
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await supervisor_task
 
                 # 停止原因：优先看 coordinator 中 root 的终态（对齐 strix：
                 # 生命周期工具把 root 标记 completed）
                 if stopped_reason == "未知":
+                    from Ben.core.progress import is_no_progress_latched, no_progress_threshold
+
                     async with coordinator._lock:
                         root_status = coordinator.statuses.get(root_id)
-                    if root_status == "completed":
+                        root_err = coordinator.errors.get(root_id, "")
+                    if is_no_progress_latched() or (
+                        isinstance(root_err, str) and "heartbeat stalled" in root_err
+                    ):
+                        n = no_progress_threshold()
+                        stopped_reason = (
+                            f"连续 {n} 轮无增量而收尾"
+                            if "heartbeat" not in str(root_err)
+                            else "supervisor: heartbeat stalled"
+                        )
+                    elif root_status == "completed":
                         stopped_reason = "模型调用 finish_scan 完成扫描"
                     elif root_status == "stopped":
                         stopped_reason = "达到最大轮数或被停止"
                     elif root_status in ("crashed", "failed"):
-                        async with coordinator._lock:
-                            err = coordinator.errors.get(root_id, "")
-                        stopped_reason = f"Agent {root_status}：{err[:200]}"
+                        stopped_reason = f"Agent {root_status}：{str(root_err)[:200]}"
                         # run_agent_loop 正常返回但 root 已被标记崩溃/失败，
                         # 同样属于异常终止，报告不得输出"未发现漏洞"结论。
                         run_error = run_error or RuntimeError(stopped_reason)

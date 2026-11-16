@@ -30,8 +30,23 @@ MAX_FRONTIER_CHARS = 6_000
 MAX_EXCLUDED_CHARS = 3_000
 _MAX_EXCLUDED_ROWS = 40
 _MAX_GAP_ROWS = 8
+_MAX_READY_ROWS = 8
+_MAX_CLAIMED_ROWS = 8
 _MAX_TODO_ROWS = 8
 _MAX_AGENT_ROWS = 8
+
+# risk_area → 建议 skill / tier / minutes（静态小表；未知走 hunter/15）
+_RISK_SUGGEST: dict[str, tuple[str, str, int]] = {
+    "xss": ("xss", "hunter", 25),
+    "sqli": ("sql_injection", "hunter", 25),
+    "sql_injection": ("sql_injection", "hunter", 25),
+    "ssrf": ("ssrf", "hunter", 25),
+    "auth": ("authentication", "hunter", 30),
+    "authz": ("broken_access_control", "hunter", 30),
+    "idor": ("broken_access_control", "hunter", 25),
+    "recon": ("reconnaissance", "scout", 10),
+    "validation": ("", "validator", 10),
+}
 
 # 按 agent_id 记住上次注入的 frontier 签名，签名不变则跳过。
 _last_frontier_sig: dict[str, str] = {}
@@ -156,13 +171,43 @@ def _agent_lines(coordinator: AgentCoordinator | None) -> list[str]:
     return lines
 
 
+def _suggest_line(surface: str, risk: str) -> str:
+    key = risk.strip().lower()
+    skill, tier, minutes = _RISK_SUGGEST.get(key, ("", "hunter", 15))
+    skill_bit = f"skills=[{skill!r}] " if skill else "skills=[] "
+    name = f"{risk or 'task'} @ {surface}"[:40]
+    return (
+        f"  suggest: name={name!r} {skill_bit}"
+        f"tier={tier!r} minutes={minutes} "
+        f"surface={surface!r} risk_area={risk!r}"
+    )
+
+
+def _claimed_keys() -> dict[tuple[str, str], dict[str, Any]]:
+    try:
+        from Ben.core.task_claims import list_claims, normalize_claim_key
+
+        out: dict[tuple[str, str], dict[str, Any]] = {}
+        for claim in list_claims():
+            key = normalize_claim_key(
+                str(claim.get("surface") or ""),
+                str(claim.get("risk_area") or ""),
+            )
+            if key[0] and key[1]:
+                out[key] = claim
+        return out
+    except Exception:  # noqa: BLE001
+        logger.debug("frontier: list_claims failed", exc_info=True)
+        return {}
+
+
 def render_frontier_block(
     *,
     coordinator: AgentCoordinator | None = None,
     entries: list[dict[str, Any]] | None = None,
     max_chars: int = MAX_FRONTIER_CHARS,
 ) -> str:
-    """≤6KB 的 root 编排状态块（coverage 缺口 / 未决 todo / agent 摘要）。"""
+    """≤6KB 的 root 编排状态块（Ready / Claimed / gaps / todo / agents）。"""
     if entries is None:
         try:
             from Ben.tools.coverage.tools import get_coverage_entries
@@ -177,7 +222,53 @@ def render_frontier_block(
         "delegate via create_agent / send_message_to_agent / stop_agent.",
     ]
 
+    claims = _claimed_keys()
     gaps = _coverage_gaps(entries)
+    ready: list[dict[str, Any]] = []
+    for gap in gaps:
+        key = (
+            str(gap.get("surface") or "").strip().lower(),
+            str(gap.get("risk_area") or "").strip().lower(),
+        )
+        if key in claims:
+            continue
+        ready.append(gap)
+
+    lines.append("## Ready (unclaimed needs_follow_up)")
+    if ready:
+        for gap in ready[:_MAX_READY_ROWS]:
+            surface = clip_line(str(gap.get("surface") or "?"), 40)
+            risk = clip_line(str(gap.get("risk_area") or "?"), 30)
+            lines.append(f"- {surface} · {risk}")
+            lines.append(_suggest_line(str(gap.get("surface") or ""), str(gap.get("risk_area") or "")))
+        omitted = len(ready) - _MAX_READY_ROWS
+        if omitted > 0:
+            lines.append(f"- … {omitted} more Ready; call list_coverage")
+    else:
+        lines.append("- (none)")
+
+    lines.append("## Claimed")
+    if claims:
+        shown = 0
+        for claim in list(claims.values())[:_MAX_CLAIMED_ROWS]:
+            surface = clip_line(str(claim.get("surface") or "?"), 40)
+            risk = clip_line(str(claim.get("risk_area") or "?"), 30)
+            owner = claim.get("agent_name") or claim.get("agent_id") or "?"
+            elapsed = ""
+            epoch = claim.get("claimed_at_epoch")
+            if isinstance(epoch, (int, float)):
+                import time as _time
+
+                mins = max(0.0, (_time.time() - float(epoch)) / 60.0)
+                elapsed = f", elapsed={mins:.1f}m"
+            lines.append(f"- {surface} · {risk} → {owner}{elapsed}")
+            shown += 1
+        omitted = len(claims) - shown
+        if omitted > 0:
+            lines.append(f"- … {omitted} more claims")
+    else:
+        lines.append("- (none)")
+
     lines.append("## Coverage gaps (needs_follow_up)")
     if gaps:
         for gap in gaps[:_MAX_GAP_ROWS]:
@@ -197,8 +288,9 @@ def render_frontier_block(
     open_n = sum(1 for e in entries if str(e.get("outcome") or "") == "needs_follow_up")
     reported_n = sum(1 for e in entries if str(e.get("outcome") or "") == "reported")
     lines.append(
-        f"## Coverage counts: total={len(entries)} open={open_n} "
-        f"excluded={excluded_n} reported={reported_n}"
+        f"## Counts: total={len(entries)} open={open_n} "
+        f"excluded={excluded_n} reported={reported_n} "
+        f"ready={len(ready)} claimed={len(claims)}"
     )
 
     todos = _open_todos()

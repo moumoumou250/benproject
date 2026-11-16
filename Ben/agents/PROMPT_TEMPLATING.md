@@ -37,7 +37,7 @@ StrictUndefined + 渲染/片段失败抛异常（strix 主 env 非严格、失�
 | `system_prompt_context.command_timeout` | `Settings.command_timeout` | 第四节"单次工具执行超时上限"（`{% if %}` 守卫） |
 | `system_prompt_context.mcp_available` / `.mcp_connections` | 调用方预留（默认 False/空） | scope.jinja MCP 条件块，无连接不输出 |
 | `shared` / `requested` | `_resolve_skills()`（category/name 限定名） | 共享内联区 / `<cache_point>` 后按需内联区 |
-| `skill_catalog` | `Ben.skills.skill_catalog()` 自动发现 | `<available_skills>` 只列 `category/name` 与 description |
+| `skill_catalog` | `Ben.skills.skill_catalog()` 自动发现 | `<available_skills>` 按类只列 name（description 不进前缀） |
 
 `_resolve_skills` 顺序（对齐 strix）：用户指定 → `scan_modes/<mode>`（
 `is_diff_scoped` 时叠加 `scan_modes/diff`）→ 工具/分析类（report_tool →

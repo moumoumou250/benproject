@@ -97,6 +97,15 @@ def test_child_factory_without_override_uses_run_level_model() -> None:
     assert child.model is None
 
 
+def test_child_factory_general_override_clears_model() -> None:
+    """general 档：显式 model_name=None → 吃 RunConfig 旗舰。"""
+    from Ben.agents.factory import make_child_factory
+
+    factory = make_child_factory(sandbox_session=_STUB_SESSION, model_name="flash-model")
+    general = factory(name="general", skills=[], model_name=None, use_root_capabilities=True)
+    assert general.model is None
+
+
 # ---- usage hooks 按 agent 模型记账 --------------------------------------------
 
 

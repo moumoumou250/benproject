@@ -396,6 +396,12 @@ async def _run_agent_loop(
                     agent_id,
                     idle_resumes,
                 )
+                try:
+                    from Ben.core.orchestration_metrics import record_idle_resume_cap
+
+                    record_idle_resume_cap()
+                except Exception:  # noqa: BLE001
+                    pass
                 await coordinator.park_waiting(agent_id, wait_kind="stalled")
                 await _notify_parent_on_stall(coordinator, agent_id)
                 continue
@@ -438,6 +444,31 @@ def _active_subagent_count(coordinator: AgentCoordinator) -> int:
     )
 
 
+def _active_tier_count(coordinator: AgentCoordinator, tier: str) -> int:
+    """在飞且 metadata.tier 匹配的子 agent 数。"""
+    from Ben.core.agents import ACTIVE_STATUSES
+
+    return sum(
+        1
+        for aid, parent in coordinator.parent_of.items()
+        if parent is not None
+        and coordinator.statuses.get(aid) in ACTIVE_STATUSES
+        and str((coordinator.metadata.get(aid) or {}).get("tier") or "") == tier
+    )
+
+
+_VALID_TIERS = frozenset({"scout", "hunter", "validator", "general"})
+
+
+def _normalize_tier(tier: str | None) -> str:
+    value = (tier or "hunter").strip().lower()
+    if value not in _VALID_TIERS:
+        raise RuntimeError(
+            f"create_agent tier must be one of {sorted(_VALID_TIERS)}, got {tier!r}"
+        )
+    return value
+
+
 def _resolve_child_minutes(minutes: float | None) -> float | None:
     """解析 per-task 时限（分钟）。
 
@@ -477,12 +508,40 @@ async def spawn_child_agent(
     skills: list[str],
     parent_history: list[Any],
     minutes: float | None = None,
+    surface: str | None = None,
+    risk_area: str | None = None,
+    tier: str | None = "hunter",
     event_sink: StreamEventSink | None = None,
     hooks: RunHooks[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     parent_id = parent_ctx.get("agent_id")
     if not isinstance(parent_id, str):
         raise TypeError("Parent agent_id missing from context")
+
+    resolved_tier = _normalize_tier(tier)
+    surface_s = (surface or "").strip()
+    risk_s = (risk_area or "").strip()
+
+    # 残局：剩余 <20% 时禁止新 surface；validator / 续领已有 claim 放行。
+    from Ben.core.scan_clock import is_deadline_passed, is_endgame
+    from Ben.core.task_claims import claims_enabled, owner_of
+
+    if is_deadline_passed(parent_ctx):
+        raise RuntimeError(
+            "scan wall-clock deadline reached; refuse new agents — "
+            "send_message_to_agent / finish_scan only"
+        )
+    if is_endgame(parent_ctx) and resolved_tier != "validator":
+        renewing = False
+        if surface_s and risk_s:
+            holder = owner_of(surface_s, risk_s)
+            renewing = holder is not None  # 续命/收窄已占面
+        if not renewing:
+            raise RuntimeError(
+                "scan endgame (<20% wall-clock left): new surfaces are blocked. "
+                "Use tier='validator' for existing findings, send_message_to_agent "
+                "to refine an in-flight child, or finish_scan."
+            )
 
     # Ben 硬闸门：BEN_MAX_SUBAGENTS=N 限制**同时在飞**的子 agent 数
     # （含子/孙；root 不计；completed/stopped/crashed/failed 释放配额）。
@@ -504,16 +563,85 @@ async def spawn_child_agent(
                 "reuse an existing agent via send_message_to_agent."
             )
 
+    if resolved_tier == "general":
+        raw_gen = os.environ.get("BEN_MAX_GENERALS", "1").strip()
+        if raw_gen:
+            try:
+                gen_limit = int(raw_gen)
+            except ValueError:
+                raise RuntimeError(
+                    f"BEN_MAX_GENERALS must be an integer, got {raw_gen!r}"
+                ) from None
+            gen_current = _active_tier_count(coordinator, "general")
+            if gen_current >= gen_limit:
+                raise RuntimeError(
+                    f"BEN_MAX_GENERALS={gen_limit} in-flight limit reached "
+                    f"(refusing general '{name}'; {gen_current} active). "
+                    "Wait for a general to finish or use tier='hunter'."
+                )
+
     child_minutes = _resolve_child_minutes(minutes)
     child_id = uuid.uuid4().hex[:8]
-    child_agent = factory(name=name, skills=skills)
+
+    # 认领：child_id 已知后、register 前；缺 surface/risk 时跳过（提示词要求带上）。
+    if surface_s and risk_s:
+        from Ben.core.orchestration_metrics import record_claim_ok, record_claim_reject
+        from Ben.core.task_claims import try_claim
+
+        ttl = (child_minutes or 45.0) * 1.5
+        claim_result = try_claim(
+            surface_s,
+            risk_s,
+            agent_id=child_id,
+            agent_name=name,
+            ttl_minutes=ttl,
+        )
+        if not claim_result.get("success"):
+            record_claim_reject()
+            raise RuntimeError(str(claim_result.get("error") or "claim failed"))
+        if claims_enabled() and not claim_result.get("bypassed"):
+            record_claim_ok()
+
+    # recall：把相似历史拼进 task（保守、本地字符串）。
+    from Ben.core.recall import augment_task_with_recall
+
+    task_augmented = augment_task_with_recall(task)
+
+    # 模型档位：general → RunConfig 旗舰（model_name=None）；其余 → flash 闭包默认。
+    factory_kwargs: dict[str, Any] = {"name": name, "skills": skills}
+    if resolved_tier == "general":
+        factory_kwargs["model_name"] = None
+        factory_kwargs["use_root_capabilities"] = True
+    try:
+        child_agent = factory(**factory_kwargs)
+    except TypeError:
+        # 旧工厂签名只收 name/skills
+        child_agent = factory(name=name, skills=skills)
+
     await coordinator.register(
         child_id,
         name,
         parent_id,
-        task=task,
+        task=task_augmented,
         skills=skills,
     )
+    # metadata 在 register 后补 tier/surface；兼容测试用的简易 coordinator stub。
+    meta_map = getattr(coordinator, "metadata", None)
+    if isinstance(meta_map, dict):
+        meta = meta_map.setdefault(child_id, {})
+        meta["tier"] = resolved_tier
+        if surface_s:
+            meta["surface"] = surface_s
+        if risk_s:
+            meta["risk_area"] = risk_s
+    else:
+        coordinator.metadata = {
+            child_id: {
+                "tier": resolved_tier,
+                **({"surface": surface_s} if surface_s else {}),
+                **({"risk_area": risk_s} if risk_s else {}),
+            }
+        }
 
     await _start_child_runner(
         parent_ctx=parent_ctx,
@@ -527,13 +655,13 @@ async def spawn_child_agent(
         child_id=child_id,
         name=name,
         parent_id=parent_id,
-        task=task,
+        task=task_augmented,
         skills=skills,
         initial_input=child_initial_input(
             name=name,
             child_id=child_id,
             parent_id=parent_id,
-            task=task,
+            task=task_augmented,
             parent_history=parent_history,
         ),
         minutes=child_minutes,
@@ -541,7 +669,9 @@ async def spawn_child_agent(
         hooks=hooks,
     )
 
-    message = f"Spawned '{name}' ({child_id}) running in parallel."
+    message = (
+        f"Spawned '{name}' ({child_id}) tier={resolved_tier} running in parallel."
+    )
     if child_minutes is not None:
         message += f" Time box: {child_minutes:g} minute(s)."
     return {
@@ -550,6 +680,9 @@ async def spawn_child_agent(
         "name": name,
         "parent_id": parent_id,
         "minutes": child_minutes,
+        "tier": resolved_tier,
+        "surface": surface_s or None,
+        "risk_area": risk_s or None,
         "message": message,
     }
 
@@ -1194,6 +1327,12 @@ async def _notify_parent_on_stall(
     agent_id: str,
 ) -> None:
     """Tell the parent that a child parked mid-task, so it stops waiting blindly."""
+    try:
+        from Ben.core.orchestration_metrics import record_stall_notice
+
+        record_stall_notice()
+    except Exception:  # noqa: BLE001
+        pass
     async with coordinator._lock:
         parent = coordinator.parent_of.get(agent_id)
         name = coordinator.names.get(agent_id, agent_id)
