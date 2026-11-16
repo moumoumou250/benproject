@@ -109,6 +109,23 @@ def _get_agent_todos(agent_id: str) -> dict[str, dict[str, Any]]:
     return _todos_storage.setdefault(agent_id, {})
 
 
+def list_all_todos() -> list[dict[str, Any]]:
+    """跨 agent 的 todo 快照（编排签名 / frontier 用），含 ``agent_id`` / ``todo_id``。"""
+    out: list[dict[str, Any]] = []
+    with _todos_io_lock:
+        for agent_id, by_id in _todos_storage.items():
+            if not isinstance(by_id, dict):
+                continue
+            for todo_id, todo in by_id.items():
+                if not isinstance(todo, dict):
+                    continue
+                row = dict(todo)
+                row.setdefault("todo_id", todo_id)
+                row.setdefault("agent_id", agent_id)
+                out.append(row)
+    return out
+
+
 def _normalize_priority(priority: str | None, default: str = "normal") -> str:
     candidate = str(priority or default or "normal").strip().lower()
     if candidate not in VALID_PRIORITIES:

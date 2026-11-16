@@ -138,6 +138,11 @@ def _filter_notes(
     return filtered
 
 
+def list_all_notes() -> list[dict[str, Any]]:
+    """全部笔记快照（recall / 编排用），含 ``note_id``。"""
+    return _filter_notes()
+
+
 def _mark_authorship(
     entry: dict[str, Any], note: dict[str, Any], caller_agent_id: str | None
 ) -> dict[str, Any]:

@@ -34,6 +34,7 @@ from Ben.core.hooks import (
     SubagentBudgetReservedError,
 )
 from Ben.core.inputs import child_initial_input
+from Ben.core.tiers import VALID_TIERS as _VALID_TIERS
 from Ben.core.sessions import (
     enforce_image_budget,
     open_agent_session,
@@ -307,6 +308,11 @@ async def run_agent_loop(
         )
     finally:
         request_log.reset_call_context(token)
+        # H3：双保险清在飞计数，保留 heartbeat path（见 clear_llm_inflight）。
+        with contextlib.suppress(Exception):
+            from Ben.core.supervisor import clear_llm_inflight
+
+            clear_llm_inflight()
 
 
 async def _run_agent_loop(
@@ -457,9 +463,6 @@ def _active_tier_count(coordinator: AgentCoordinator, tier: str) -> int:
     )
 
 
-_VALID_TIERS = frozenset({"scout", "hunter", "validator", "general"})
-
-
 def _normalize_tier(tier: str | None) -> str:
     value = (tier or "hunter").strip().lower()
     if value not in _VALID_TIERS:
@@ -608,66 +611,88 @@ async def spawn_child_agent(
     task_augmented = augment_task_with_recall(task)
 
     # 模型档位：general → RunConfig 旗舰（model_name=None）；其余 → flash 闭包默认。
+    import inspect
+
     factory_kwargs: dict[str, Any] = {"name": name, "skills": skills}
     if resolved_tier == "general":
         factory_kwargs["model_name"] = None
         factory_kwargs["use_root_capabilities"] = True
+    params = inspect.signature(factory).parameters
+    if "model_name" not in params:
+        if "model_name" in factory_kwargs or "use_root_capabilities" in factory_kwargs:
+            logger.warning(
+                "factory does not accept model_name; general tier degrades to flash"
+            )
+        factory_kwargs.pop("model_name", None)
+        factory_kwargs.pop("use_root_capabilities", None)
+
+    registered = False
     try:
         child_agent = factory(**factory_kwargs)
-    except TypeError:
-        # 旧工厂签名只收 name/skills
-        child_agent = factory(name=name, skills=skills)
 
-    await coordinator.register(
-        child_id,
-        name,
-        parent_id,
-        task=task_augmented,
-        skills=skills,
-    )
-    # metadata 在 register 后补 tier/surface；兼容测试用的简易 coordinator stub。
-    meta_map = getattr(coordinator, "metadata", None)
-    if isinstance(meta_map, dict):
-        meta = meta_map.setdefault(child_id, {})
-        meta["tier"] = resolved_tier
-        if surface_s:
-            meta["surface"] = surface_s
-        if risk_s:
-            meta["risk_area"] = risk_s
-    else:
-        coordinator.metadata = {
-            child_id: {
-                "tier": resolved_tier,
-                **({"surface": surface_s} if surface_s else {}),
-                **({"risk_area": risk_s} if risk_s else {}),
+        await coordinator.register(
+            child_id,
+            name,
+            parent_id,
+            task=task_augmented,
+            skills=skills,
+        )
+        registered = True
+        # metadata 在 register 后补 tier/surface；兼容测试用的简易 coordinator stub。
+        meta_map = getattr(coordinator, "metadata", None)
+        if isinstance(meta_map, dict):
+            meta = meta_map.setdefault(child_id, {})
+            meta["tier"] = resolved_tier
+            if surface_s:
+                meta["surface"] = surface_s
+            if risk_s:
+                meta["risk_area"] = risk_s
+        else:
+            coordinator.metadata = {
+                child_id: {
+                    "tier": resolved_tier,
+                    **({"surface": surface_s} if surface_s else {}),
+                    **({"risk_area": risk_s} if risk_s else {}),
+                }
             }
-        }
 
-    await _start_child_runner(
-        parent_ctx=parent_ctx,
-        coordinator=coordinator,
-        agents_db_path=agents_db_path,
-        sessions_to_close=sessions_to_close,
-        run_config=run_config,
-        max_turns=max_turns,
-        interactive=interactive,
-        child_agent=child_agent,
-        child_id=child_id,
-        name=name,
-        parent_id=parent_id,
-        task=task_augmented,
-        skills=skills,
-        initial_input=child_initial_input(
-            name=name,
+        await _start_child_runner(
+            parent_ctx=parent_ctx,
+            coordinator=coordinator,
+            agents_db_path=agents_db_path,
+            sessions_to_close=sessions_to_close,
+            run_config=run_config,
+            max_turns=max_turns,
+            interactive=interactive,
+            child_agent=child_agent,
             child_id=child_id,
+            name=name,
             parent_id=parent_id,
             task=task_augmented,
-            parent_history=parent_history,
-        ),
-        minutes=child_minutes,
-        event_sink=event_sink,
-        hooks=hooks,
-    )
+            skills=skills,
+            initial_input=child_initial_input(
+                name=name,
+                child_id=child_id,
+                parent_id=parent_id,
+                task=task_augmented,
+                parent_history=parent_history,
+            ),
+            minutes=child_minutes,
+            event_sink=event_sink,
+            hooks=hooks,
+        )
+    except BaseException:
+        # H7：claim 在 register 之前；失败必须直接 release，不能依赖 set_status。
+        if surface_s and risk_s:
+            from Ben.core.task_claims import release_for_agent
+
+            release_for_agent(child_id)
+        if registered:
+            with contextlib.suppress(Exception):
+                await coordinator.set_status(
+                    child_id, "failed", error="spawn failed"
+                )
+        raise
 
     message = (
         f"Spawned '{name}' ({child_id}) tier={resolved_tier} running in parallel."
@@ -1550,6 +1575,17 @@ async def _start_child_runner(
             logger.info("child %s stopped after reaching the scan budget limit", child_id)
         except SubagentBudgetReservedError:
             logger.info("child %s stopped at the sub-agent budget reserve", child_id)
+        except asyncio.CancelledError:
+            # H2：task.cancel 必须落终态，否则快照留 running。
+            status = await _agent_status(coordinator, child_id)
+            from Ben.core.agents import TERMINAL_STATUSES
+
+            if status not in TERMINAL_STATUSES:
+                with contextlib.suppress(Exception):
+                    await coordinator.set_status(
+                        child_id, "stopped", error="cancelled"
+                    )
+            raise
         finally:
             if timer is not None and not timer.done():
                 timer.cancel()

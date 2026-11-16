@@ -91,6 +91,14 @@ async def wait_for_user(ctx: RunContextWrapper) -> str:
         )
 
     await coordinator.park_waiting(me, wait_kind="user")
+    # H1：合法空闲时写心跳，减少 supervisor 边界抖动。
+    if inner.get("parent_id") is None:
+        try:
+            from Ben.core.supervisor import write_heartbeat
+
+            write_heartbeat({"event": "wait_for_user", "agent_id": me})
+        except Exception:  # noqa: BLE001
+            pass
     return json.dumps(
         {
             "success": True,

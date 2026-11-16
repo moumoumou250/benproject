@@ -12,7 +12,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from Ben.core.agents import ACTIVE_STATUSES, TERMINAL_STATUSES
-from Ben.core.prompt_budget import INDEX_LINE_MAX, clip_line
+from Ben.core.prompt_budget import clip_line
 
 
 if TYPE_CHECKING:
@@ -29,7 +29,6 @@ FRONTIER_MARKER = "[Frontier status]"
 MAX_FRONTIER_CHARS = 6_000
 MAX_EXCLUDED_CHARS = 3_000
 _MAX_EXCLUDED_ROWS = 40
-_MAX_GAP_ROWS = 8
 _MAX_READY_ROWS = 8
 _MAX_CLAIMED_ROWS = 8
 _MAX_TODO_ROWS = 8
@@ -172,14 +171,20 @@ def _agent_lines(coordinator: AgentCoordinator | None) -> list[str]:
 
 
 def _suggest_line(surface: str, risk: str) -> str:
+    # L4：json.dumps，避免 surface 含引号时 Python repr 破形。
+    import json
+
     key = risk.strip().lower()
     skill, tier, minutes = _RISK_SUGGEST.get(key, ("", "hunter", 15))
-    skill_bit = f"skills=[{skill!r}] " if skill else "skills=[] "
     name = f"{risk or 'task'} @ {surface}"[:40]
+    skill_list = [skill] if skill else []
     return (
-        f"  suggest: name={name!r} {skill_bit}"
-        f"tier={tier!r} minutes={minutes} "
-        f"surface={surface!r} risk_area={risk!r}"
+        "  suggest: "
+        f"name={json.dumps(name, ensure_ascii=False)} "
+        f"skills={json.dumps(skill_list, ensure_ascii=False)} "
+        f"tier={json.dumps(tier, ensure_ascii=False)} minutes={minutes} "
+        f"surface={json.dumps(surface, ensure_ascii=False)} "
+        f"risk_area={json.dumps(risk, ensure_ascii=False)}"
     )
 
 
@@ -201,13 +206,33 @@ def _claimed_keys() -> dict[tuple[str, str], dict[str, Any]]:
         return {}
 
 
+def _clip_section(lines: list[str], budget: int, *, more_hint: str) -> list[str]:
+    """按字节预算折叠段尾，关键段（todo/agents）永不整段丢弃。"""
+    if budget <= 0:
+        return [lines[0], f"- … folded; {more_hint}"] if lines else []
+    out: list[str] = []
+    used = 0
+    for i, line in enumerate(lines):
+        add = len(line) + (1 if out else 0)
+        if used + add > budget and i > 0:
+            remaining = len(lines) - i
+            out.append(f"- … {remaining} more; {more_hint}")
+            break
+        out.append(line)
+        used += add
+    return out
+
+
 def render_frontier_block(
     *,
     coordinator: AgentCoordinator | None = None,
     entries: list[dict[str, Any]] | None = None,
     max_chars: int = MAX_FRONTIER_CHARS,
 ) -> str:
-    """≤6KB 的 root 编排状态块（Ready / Claimed / gaps / todo / agents）。"""
+    """≤6KB 的 root 编排状态块（Ready / Claimed / todo / agents）。
+
+    M4：不再重复渲染 Coverage gaps（Ready 已覆盖）；分段预算，不整块尾部截断。
+    """
     if entries is None:
         try:
             from Ben.tools.coverage.tools import get_coverage_entries
@@ -216,7 +241,7 @@ def render_frontier_block(
         except Exception:  # noqa: BLE001
             entries = []
 
-    lines: list[str] = [
+    header = [
         FRONTIER_MARKER,
         "Orchestration snapshot only — do not probe the target yourself; "
         "delegate via create_agent / send_message_to_agent / stop_agent.",
@@ -234,20 +259,22 @@ def render_frontier_block(
             continue
         ready.append(gap)
 
-    lines.append("## Ready (unclaimed needs_follow_up)")
+    ready_lines = ["## Ready (unclaimed needs_follow_up)"]
     if ready:
         for gap in ready[:_MAX_READY_ROWS]:
             surface = clip_line(str(gap.get("surface") or "?"), 40)
             risk = clip_line(str(gap.get("risk_area") or "?"), 30)
-            lines.append(f"- {surface} · {risk}")
-            lines.append(_suggest_line(str(gap.get("surface") or ""), str(gap.get("risk_area") or "")))
+            ready_lines.append(f"- {surface} · {risk}")
+            ready_lines.append(
+                _suggest_line(str(gap.get("surface") or ""), str(gap.get("risk_area") or ""))
+            )
         omitted = len(ready) - _MAX_READY_ROWS
         if omitted > 0:
-            lines.append(f"- … {omitted} more Ready; call list_coverage")
+            ready_lines.append(f"- … {omitted} more Ready; call list_coverage")
     else:
-        lines.append("- (none)")
+        ready_lines.append("- (none)")
 
-    lines.append("## Claimed")
+    claimed_lines = ["## Claimed"]
     if claims:
         shown = 0
         for claim in list(claims.values())[:_MAX_CLAIMED_ROWS]:
@@ -261,62 +288,59 @@ def render_frontier_block(
 
                 mins = max(0.0, (_time.time() - float(epoch)) / 60.0)
                 elapsed = f", elapsed={mins:.1f}m"
-            lines.append(f"- {surface} · {risk} → {owner}{elapsed}")
+            claimed_lines.append(f"- {surface} · {risk} → {owner}{elapsed}")
             shown += 1
         omitted = len(claims) - shown
         if omitted > 0:
-            lines.append(f"- … {omitted} more claims")
+            claimed_lines.append(f"- … {omitted} more claims")
     else:
-        lines.append("- (none)")
-
-    lines.append("## Coverage gaps (needs_follow_up)")
-    if gaps:
-        for gap in gaps[:_MAX_GAP_ROWS]:
-            surface = clip_line(str(gap.get("surface") or "?"), 40)
-            risk = clip_line(str(gap.get("risk_area") or "?"), 30)
-            detail = clip_line(str(gap.get("detail") or ""), INDEX_LINE_MAX)
-            lines.append(f"- {surface} · {risk}" + (f" — {detail}" if detail else ""))
-        omitted = len(gaps) - _MAX_GAP_ROWS
-        if omitted > 0:
-            lines.append(f"- … {omitted} more; call list_coverage")
-    else:
-        lines.append("- (none)")
+        claimed_lines.append("- (none)")
 
     excluded_n = sum(
         1 for e in entries if str(e.get("outcome") or "").lower() in EXCLUDED_OUTCOMES
     )
     open_n = sum(1 for e in entries if str(e.get("outcome") or "") == "needs_follow_up")
     reported_n = sum(1 for e in entries if str(e.get("outcome") or "") == "reported")
-    lines.append(
+    # M4：gaps 只保留计数，避免与 Ready 重复。
+    counts_lines = [
         f"## Counts: total={len(entries)} open={open_n} "
         f"excluded={excluded_n} reported={reported_n} "
-        f"ready={len(ready)} claimed={len(claims)}"
-    )
+        f"ready={len(ready)} claimed={len(claims)} gaps_total={len(gaps)}"
+    ]
 
     todos = _open_todos()
-    lines.append("## Open todos")
+    todo_lines = ["## Open todos"]
     if todos:
         for todo in todos[:_MAX_TODO_ROWS]:
             status = todo.get("status", "pending")
             pri = todo.get("priority", "normal")
             title = clip_line(str(todo.get("title") or todo.get("content") or "?"), 60)
-            lines.append(f"- [{status}/{pri}] {title}")
+            todo_lines.append(f"- [{status}/{pri}] {title}")
         omitted = len(todos) - _MAX_TODO_ROWS
         if omitted > 0:
-            lines.append(f"- … {omitted} more; call list_todos")
+            todo_lines.append(f"- … {omitted} more; call list_todos")
     else:
-        lines.append("- (none)")
+        todo_lines.append("- (none)")
 
-    agent_lines = _agent_lines(coordinator)
-    lines.append("## Sub-agents")
-    if agent_lines:
-        lines.extend(agent_lines)
+    agent_body = _agent_lines(coordinator)
+    agent_lines = ["## Sub-agents"]
+    if agent_body:
+        agent_lines.extend(agent_body)
     else:
-        lines.append("- (none)")
+        agent_lines.append("- (none)")
 
-    text = "\n".join(lines)
+    budgets = {"ready": 2400, "claimed": 900, "todo": 1200, "agents": 1200}
+    sections = [
+        _clip_section(ready_lines, budgets["ready"], more_hint="call list_coverage"),
+        _clip_section(claimed_lines, budgets["claimed"], more_hint="call list_claims"),
+        counts_lines,
+        _clip_section(todo_lines, budgets["todo"], more_hint="call list_todos"),
+        _clip_section(agent_lines, budgets["agents"], more_hint="call view_agent_graph"),
+    ]
+    text = "\n".join(header + [line for sec in sections for line in sec])
     if len(text) <= max_chars:
         return text
+    # 最后兜底仍保关键关键段标题可见。
     return text[: max_chars - 1].rstrip() + "…"
 
 

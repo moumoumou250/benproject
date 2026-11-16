@@ -548,16 +548,26 @@ class AgentCoordinator:
             return count, []
         return count, items
 
-    async def request_stop(self, agent_id: str) -> None:
+    async def request_stop(self, agent_id: str, *, mode: str = "after_turn") -> None:
+        """请求停止。``mode`` 传给 SDK stream.cancel（默认 after_turn）。"""
         async with self._lock:
             if agent_id not in self.statuses:
                 return
+            prev = self.statuses.get(agent_id)
             self.statuses[agent_id] = "stopped"
             runtime = self.runtimes.setdefault(agent_id, AgentRuntime())
             runtime.wake.set()
             stream = runtime.stream
+            became_terminal = prev not in TERMINAL_STATUSES
         if stream is not None:
-            stream.cancel(mode="after_turn")
+            stream.cancel(mode=mode)
+        if became_terminal:
+            try:
+                from Ben.core.task_claims import release_for_agent
+
+                release_for_agent(agent_id)
+            except Exception:  # noqa: BLE001
+                logger.exception("task claim release failed for %s", agent_id)
         await self._maybe_snapshot()
 
     async def cancel_descendants(self, agent_id: str) -> None:

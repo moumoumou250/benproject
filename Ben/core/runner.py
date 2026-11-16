@@ -757,14 +757,24 @@ class AgentRunner:
         coordinator.set_snapshot_path(agents_path)
         coordinator.root_finish_tool = "finish_scan"
 
-        from Ben.core.orchestration_metrics import bind_orchestration_metrics
-        from Ben.core.supervisor import bind_heartbeat
+        from Ben.core.orchestration_metrics import (
+            bind_orchestration_metrics,
+            reset_orchestration_metrics,
+        )
+        from Ben.core.progress import reset_progress_tracker
+        from Ben.core.supervisor import bind_heartbeat, reset_supervisor_state
         from Ben.core.task_claims import hydrate_task_claims_from_disk
         from Ben.tools.coverage.tools import hydrate_coverage_from_disk
         from Ben.tools.notes.tools import hydrate_notes_from_disk
         from Ben.tools.threat_model.tools import hydrate_threat_models_from_disk
         from Ben.tools.todo.tools import hydrate_todos_from_disk
-        from Ben.tools.verify.tool import hydrate_verify_from_disk
+        from Ben.tools.verify.tool import hydrate_verify_from_disk, reset_verify_store
+
+        # M2：reset → hydrate → bind，避免跨 run 泄漏 latch / 计数。
+        reset_progress_tracker()
+        reset_orchestration_metrics()
+        reset_verify_store()
+        reset_supervisor_state()
 
         hydrate_todos_from_disk(state_dir)
         hydrate_notes_from_disk(state_dir)
@@ -1069,11 +1079,31 @@ class AgentRunner:
                     SUBAGENT_TURN_LIMITS_KEY: {},
                 }
                 from Ben.core.scan_clock import install_deadline, resolve_scan_minutes
+                from datetime import datetime as _dt
 
                 scan_minutes = settings.runtime.scan_minutes
                 if scan_minutes is None:
                     scan_minutes = resolve_scan_minutes()
-                install_deadline(context, minutes=scan_minutes)
+                # M9：resume 继承原 start_time，避免墙钟翻倍。
+                started_at_epoch: float | None = None
+                if is_resume:
+                    try:
+                        from Ben.report import get_global_report_state
+
+                        rs = get_global_report_state()
+                        raw_start = getattr(rs, "start_time", None) if rs else None
+                        if isinstance(raw_start, str) and raw_start:
+                            started_at_epoch = _dt.fromisoformat(
+                                raw_start.replace("Z", "+00:00")
+                            ).timestamp()
+                    except Exception:  # noqa: BLE001
+                        logger.debug(
+                            "scan clock: could not parse resume start_time",
+                            exc_info=True,
+                        )
+                install_deadline(
+                    context, minutes=scan_minutes, started_at=started_at_epoch
+                )
                 self._metrics_root_id = root_id
 
                 root_session = open_agent_session(root_id, agents_db)
@@ -1200,25 +1230,30 @@ class AgentRunner:
                     with contextlib.suppress(asyncio.CancelledError):
                         await supervisor_task
 
-                # 停止原因：优先看 coordinator 中 root 的终态（对齐 strix：
-                # 生命周期工具把 root 标记 completed）
+                # 停止原因：completed 优先于 no_progress latch（M3）。
                 if stopped_reason == "未知":
-                    from Ben.core.progress import is_no_progress_latched, no_progress_threshold
+                    from Ben.core.progress import (
+                        is_no_progress_latched,
+                        no_progress_reason,
+                        no_progress_threshold,
+                    )
 
                     async with coordinator._lock:
                         root_status = coordinator.statuses.get(root_id)
                         root_err = coordinator.errors.get(root_id, "")
-                    if is_no_progress_latched() or (
+                    if root_status == "completed":
+                        stopped_reason = "模型调用 finish_scan 完成扫描"
+                    elif (
                         isinstance(root_err, str) and "heartbeat stalled" in root_err
-                    ):
+                    ) or no_progress_reason() == "heartbeat":
+                        stopped_reason = "supervisor: heartbeat stalled"
+                    elif is_no_progress_latched():
                         n = no_progress_threshold()
                         stopped_reason = (
                             f"连续 {n} 轮无增量而收尾"
-                            if "heartbeat" not in str(root_err)
-                            else "supervisor: heartbeat stalled"
+                            if n > 0
+                            else "无进展收尾"
                         )
-                    elif root_status == "completed":
-                        stopped_reason = "模型调用 finish_scan 完成扫描"
                     elif root_status == "stopped":
                         stopped_reason = "达到最大轮数或被停止"
                     elif root_status in ("crashed", "failed"):

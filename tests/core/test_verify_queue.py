@@ -25,6 +25,7 @@ def _clean(tmp_path: Path) -> None:
 
 
 def test_http_detection() -> None:
+    assert _finding_looks_http({"http_exchange_ids": ["abc"]}) is True
     assert _finding_looks_http({"http_request_id": "x"}) is True
     assert _finding_looks_http({"metadata": {"exchange_id": "y"}}) is True
     assert _finding_looks_http({"title": "logic bug"}) is False

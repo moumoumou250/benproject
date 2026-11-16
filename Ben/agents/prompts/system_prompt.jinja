@@ -170,7 +170,9 @@
    - 汇总发现：list_reports / get_report（写报告由子 Agent 完成）。
 {% else %}
    - 沙箱取证：exec_command（curl/nmap/ffuf 等已预装；每个主机名/IP 必须在
-     授权白名单内）/ write_stdin（tty 会话输入与轮询）。
+     授权白名单内）/ write_stdin（tty 会话输入与轮询）。长扫描（如 nmap -p-）
+     放后台并重定向到日志再读回；超长输出会被截断，应缩小范围重读而非反复
+     全量重跑。HTTPS 经 Caido 时代理已信任证书，勿再加 ignore-certificate。
    - 页面交互：经 exec_command 调 agent-browser（快照/点击/截图）；细节见
      tooling/agent_browser。
    - 代理留痕与重放：list_requests / view_request / repeat_request /

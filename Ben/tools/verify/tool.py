@@ -1,22 +1,24 @@
-"""非 HTTP 发现的对抗性验证队列（fail-closed 的半边）。
+"""对抗性验证队列：入队 → validator 结算 → finish_scan 消费。
 
-``verify_finding`` 入队并（若有 spawner）以 ``tier=validator``、
-``inherit_context=false`` 派生子 agent；**不**阻塞 ``finish_scan``。
-HTTP 类继续走 reporting 的 exchange-id 硬门，本工具对已有
-``http_request_id`` / exchange 证据的发现直接跳过。
+HTTP 发现（带 ``http_exchange_ids``）走 reporting 硬门，本工具跳过。
+非 HTTP 发现由 root 调 ``verify_finding`` 入队；``record_verify_outcome``
+仅分配到的 validator（或未派单时的结算方）可写。``finish_scan`` 读取
+队列，给每条发现打 ``verification_status``，并把 refuted 移出正文。
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import tempfile
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
 from agents import RunContextWrapper, function_tool
+
+from Ben.core.agents import coordinator_from_context
+from Ben.core.jsonstore import atomic_write_json
 
 
 logger = logging.getLogger(__name__)
@@ -29,7 +31,7 @@ _verify_store: dict[str, dict[str, Any]] = {}
 
 
 def reset_verify_store() -> None:
-    """测试用。"""
+    """测试 / 每 run 开头调用。"""
     global _verify_path  # noqa: PLW0603
     with _verify_lock:
         _verify_store.clear()
@@ -62,15 +64,8 @@ def _persist_locked() -> None:
     path = _verify_path
     if path is None:
         return
-    payload = json.dumps(_verify_store, ensure_ascii=False, indent=2, default=str)
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
-            "w", encoding="utf-8", dir=path.parent, delete=False
-        ) as tmp:
-            tmp.write(payload)
-            tmp_path = Path(tmp.name)
-        tmp_path.replace(path)
+        atomic_write_json(path, _verify_store)
     except OSError:
         logger.exception("verify_queue persist failed at %s", path)
 
@@ -104,20 +99,23 @@ def record_verify_result(
         prev = _verify_store.get(finding_id)
         if prev and prev.get("queued_at"):
             entry["queued_at"] = prev["queued_at"]
+        if prev and prev.get("claim") and "claim" not in entry:
+            entry["claim"] = prev.get("claim")
         _verify_store[finding_id] = entry
         _persist_locked()
         return dict(entry)
 
 
 def _finding_looks_http(report: dict[str, Any]) -> bool:
-    if report.get("http_request_id") or report.get("exchange_id"):
-        return True
-    meta = report.get("metadata") if isinstance(report.get("metadata"), dict) else {}
-    if meta.get("http_request_id") or meta.get("exchange_id"):
-        return True
-    poc = report.get("poc") if isinstance(report.get("poc"), dict) else {}
-    if poc.get("http_request_id") or poc.get("exchange_id"):
-        return True
+    # H8：报告字段是 http_exchange_ids；旧字段保留兼容。
+    for holder in (report, report.get("metadata"), report.get("poc")):
+        if not isinstance(holder, dict):
+            continue
+        ids = holder.get("http_exchange_ids")
+        if isinstance(ids, list) and ids:
+            return True
+        if holder.get("http_request_id") or holder.get("exchange_id"):
+            return True
     return False
 
 
@@ -135,11 +133,11 @@ async def verify_finding(
 ) -> str:
     """Queue adversarial verification for a non-HTTP finding.
 
-    Spawns a short-lived ``validator`` child (no inherited context) whose
-    only job is to try to **falsify** the claim. HTTP findings that already
-    carry exchange/request ids are skipped — the reporting tool's evidence
-    gate already covers them. Results land in the verify queue; ``finish_scan``
-    does **not** wait for them.
+    Root-only. Spawns a short-lived ``validator`` child (no inherited
+    context) whose job is to try to **falsify** the claim. HTTP findings
+    that already carry ``http_exchange_ids`` are skipped. Results land in
+    the verify queue; ``finish_scan`` consumes them and annotates each
+    finding with ``verification_status``.
 
     Args:
         finding_id: Id from ``create_vulnerability_report`` / ``list_reports``.
@@ -159,6 +157,15 @@ async def verify_finding(
                 "error": "finding_id, claim, and falsifier are required",
             },
             ensure_ascii=False,
+        )
+
+    # M7：幂等 — queued/upheld/refuted 不重复派单。
+    existing = get_verify_result(finding_id)
+    if existing and existing.get("status") in {"queued", "upheld", "refuted"}:
+        return json.dumps(
+            {"success": True, "already": True, **existing},
+            ensure_ascii=False,
+            default=str,
         )
 
     from Ben.report import get_global_report_state
@@ -210,8 +217,8 @@ async def verify_finding(
             f"Evidence: {evidence}\n"
             f"Falsifier (what would refute it): {falsifier}\n\n"
             "Try to falsify the claim. Do not inherit hunter narrative. "
-            "When done, call agent_finish with result_summary stating "
-            "upheld | refuted | insufficient and why. "
+            "When done, call record_verify_outcome with upheld | refuted | "
+            "insufficient, then agent_finish. "
             "Also call record_coverage if you ruled the surface out."
         )
         try:
@@ -236,14 +243,19 @@ async def verify_finding(
                     _verify_store[finding_id] = entry
                     _persist_locked()
         except Exception as exc:
+            # M6：spawn 失败必须诚实返回，不能假装已排队验证。
             logger.exception("verify_finding spawn failed for %s", finding_id)
             return json.dumps(
                 {
-                    "success": True,
+                    "success": False,
                     "finding_id": finding_id,
-                    "status": "queued",
+                    "status": "not_spawned",
                     "spawn_error": str(exc),
-                    "message": "Queued without child; finish_scan will treat as unverified",
+                    "message": (
+                        "Not queued for verification: no child slot or spawn "
+                        "error. Either wait for a slot and retry, or accept "
+                        "this finding as unverified."
+                    ),
                 },
                 ensure_ascii=False,
             )
@@ -255,8 +267,8 @@ async def verify_finding(
             "status": "queued",
             "spawned": spawned,
             "message": (
-                "Verification queued. finish_scan will not block on this; "
-                "unfinished entries stay unverified."
+                "Verification queued. finish_scan annotates "
+                "verification_status; unfinished entries stay unverified."
             ),
         },
         ensure_ascii=False,
@@ -280,6 +292,7 @@ async def record_verify_outcome(
     """
     inner = _ctx(ctx)
     me = inner.get("agent_id")
+    finding_id = (finding_id or "").strip()
     normalized = (status or "").strip().lower()
     if normalized not in {"upheld", "refuted", "insufficient"}:
         return json.dumps(
@@ -289,13 +302,41 @@ async def record_verify_outcome(
             },
             ensure_ascii=False,
         )
-    entry = record_verify_result(
-        (finding_id or "").strip(),
+
+    entry = get_verify_result(finding_id)
+    if entry is None:
+        return json.dumps(
+            {
+                "success": False,
+                "error": "unknown finding under verification",
+            },
+            ensure_ascii=False,
+        )
+
+    # H6：仅分配到的 validator（或未派单时）可结算；禁止 hunter 自证。
+    coordinator = coordinator_from_context(inner)
+    tier = None
+    if coordinator is not None and isinstance(me, str):
+        meta = coordinator.metadata.get(me) or {}
+        if isinstance(meta, dict):
+            tier = meta.get("tier")
+    owner = entry.get("agent_id")
+    if owner and me != owner and tier != "validator":
+        return json.dumps(
+            {
+                "success": False,
+                "error": "only the assigned validator may record this outcome",
+            },
+            ensure_ascii=False,
+        )
+
+    saved = record_verify_result(
+        finding_id,
         status=normalized,  # type: ignore[arg-type]
         reason=reason or "",
         agent_id=me if isinstance(me, str) else None,
     )
-    return json.dumps({"success": True, **entry}, ensure_ascii=False)
+    return json.dumps({"success": True, **saved}, ensure_ascii=False)
 
 
 def unfinished_verify_ids() -> list[str]:
@@ -305,3 +346,48 @@ def unfinished_verify_ids() -> list[str]:
             for fid, entry in _verify_store.items()
             if entry.get("status") == "queued"
         ]
+
+
+def apply_verification_to_reports(
+    reports: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """给每条漏洞报告打 verification_status；返回汇总（供 finish_scan）。
+
+    不改 ``vulnerabilities_found`` 口径；并列给出 effective / refuted / unverified。
+    """
+    results = {str(r.get("finding_id")): r for r in list_verify_results()}
+    refuted: list[str] = []
+    unverified: list[str] = []
+    upheld: list[str] = []
+    for report in reports:
+        rid = str(report.get("id") or "")
+        if not rid:
+            continue
+        row = results.get(rid)
+        if row is None:
+            report["verification_status"] = "unverified"
+            unverified.append(rid)
+            continue
+        status = str(row.get("status") or "")
+        if status == "refuted":
+            report["verification_status"] = "refuted"
+            refuted.append(rid)
+        elif status == "upheld":
+            report["verification_status"] = "upheld"
+            upheld.append(rid)
+        elif status == "skipped_http":
+            report["verification_status"] = "skipped_http"
+        else:
+            report["verification_status"] = "unverified"
+            unverified.append(rid)
+    effective = [
+        r
+        for r in reports
+        if r.get("verification_status") not in {"refuted"}
+    ]
+    return {
+        "refuted_ids": refuted,
+        "unverified_ids": unverified,
+        "upheld_ids": upheld,
+        "vulnerabilities_effective": len(effective),
+    }

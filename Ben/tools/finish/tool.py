@@ -45,6 +45,12 @@ def _do_finish(
     if errors:
         return {"success": False, "error": "Validation failed", "errors": errors}
 
+    verify_summary: dict[str, Any] = {
+        "refuted_ids": [],
+        "unverified_ids": [],
+        "upheld_ids": [],
+        "vulnerabilities_effective": 0,
+    }
     try:
         from Ben.report.state import get_global_report_state
 
@@ -57,10 +63,40 @@ def _do_finish(
                 "message": "Scan completed (not persisted)",
                 "warning": "Results could not be persisted - report state unavailable",
             }
+        # H4：消费 verify 队列，标注 verification_status（不改漏洞总数口径）。
+        from Ben.tools.verify.tool import apply_verification_to_reports
+
+        verify_summary = apply_verification_to_reports(
+            report_state.vulnerability_reports
+        )
+        tech = technical_analysis.strip()
+        refuted_ids = list(verify_summary.get("refuted_ids") or [])
+        unverified_ids = list(verify_summary.get("unverified_ids") or [])
+        if refuted_ids or unverified_ids:
+            appendix_lines = ["", "## Verification appendix"]
+            if unverified_ids:
+                appendix_lines.append(
+                    "Unverified findings (queued or never sent): "
+                    + ", ".join(f"`{i}`" for i in unverified_ids)
+                )
+            if refuted_ids:
+                appendix_lines.append(
+                    "Refuted / not adopted (excluded from findings body): "
+                    + ", ".join(f"`{i}`" for i in refuted_ids)
+                )
+            tech = tech + "\n".join(appendix_lines)
+        # 刀 B：正文里 unverified 标题加标记；refuted 标题注明已证伪。
+        for report in report_state.vulnerability_reports:
+            title = str(report.get("title") or "")
+            status = report.get("verification_status")
+            if status == "unverified" and title and "[未验证]" not in title:
+                report["title"] = f"[未验证] {title}"
+            elif status == "refuted" and title and "[已证伪]" not in title:
+                report["title"] = f"[已证伪] {title}"
         report_state.update_scan_final_fields(
             executive_summary=executive_summary.strip(),
             methodology=methodology.strip(),
-            technical_analysis=technical_analysis.strip(),
+            technical_analysis=tech,
             recommendations=recommendations.strip(),
         )
         vuln_count = len(report_state.vulnerability_reports)
@@ -79,6 +115,7 @@ def _do_finish(
             "message": "Scan completed successfully",
             "vulnerabilities_found": vuln_count,
         }
+        result.update(verify_summary)
         result.update(coverage_summary)
         return result
 

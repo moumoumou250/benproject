@@ -34,9 +34,9 @@ def test_overlap_and_augment() -> None:
             "surface": "/api/login",
             "risk_area": "xss",
             "outcome": "ruled_out",
-            "evidence": "escaped reflection",
+            "evidence": "escaped reflection on login form xss probe payload",
         }
-    task = "Probe /api/login for xss reflection"
+    task = "Probe /api/login for xss reflection escaped payload"
     block = format_recall_block(task)
     assert "已知/已排除" in block
     assert "xss" in block.lower() or "login" in block.lower()

@@ -1047,7 +1047,6 @@ _BASE_TOOLS: tuple[Tool, ...] = (
     delete_vulnerability_report,
     list_reports,
     get_report,
-    verify_finding,
     record_verify_outcome,
     list_requests,
     view_request,
@@ -1249,9 +1248,10 @@ def build_agent(
             finish_tool = _without_coverage_step(finish_scan)
     if is_root:
         # 编排者不背探测/外网/写报告 schema（提示词约束不够硬）。
+        # H6：verify_finding 仅 root 派单；validator 用 record_verify_outcome。
         drop = _ROOT_NETWORK_DROP | _ROOT_REPORT_WRITE_DROP
         base_tools = [t for t in base_tools if t.name not in drop]
-        tools: list[Tool] = [*base_tools, *agent_tools, finish_tool]
+        tools: list[Tool] = [*base_tools, verify_finding, *agent_tools, finish_tool]
     else:
         tools = [*base_tools, *agent_tools, agent_finish]
     # shell / filesystem 工具由 SDK capability 绑定 session 生成（Ben 手动

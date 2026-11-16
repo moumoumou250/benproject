@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import json
 import logging
-import tempfile
 import threading
 from pathlib import Path
 from typing import Any
+
+from Ben.core.jsonstore import atomic_write_json
 
 
 logger = logging.getLogger(__name__)
@@ -136,17 +137,7 @@ def _persist_locked() -> None:
     path = _path
     if path is None:
         return
-    payload = json.dumps(_metrics, ensure_ascii=False, indent=2, default=str)
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=path.parent,
-            delete=False,
-        ) as tmp:
-            tmp.write(payload)
-            tmp_path = Path(tmp.name)
-        tmp_path.replace(path)
+        atomic_write_json(path, _metrics)
     except OSError:
         logger.exception("orchestration_metrics persist failed at %s", path)

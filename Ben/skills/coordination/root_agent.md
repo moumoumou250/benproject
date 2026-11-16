@@ -99,7 +99,7 @@ Each agent should have a specific, measurable goal. Vague objectives lead to sco
 Before creating agents:
 1. Analyze the target scope and break into independent tasks
 2. Check frontier **Ready / Claimed** (and existing agents) to avoid overlap
-3. Pass `surface` + `risk_area` on `create_agent` so the runtime can claim the work unit in code — if the tool returns a claim conflict, `send_message_to_agent` the holder or pick a different surface (do not invent a parallel claim flow)
+3. When `BEN_CLAIM=1`, every `create_agent` for `hunter`/`general` **must** pass both `surface` and `risk_area` (missing either returns an error). `surface` is the smallest work unit (endpoint / route / component), not the whole site. `scout` and `validator` are exempt. On claim conflict, `send_message_to_agent` the holder or pick a different surface — do not invent a parallel claim flow
 4. Create agents with clear, specific objectives
 5. If the root task already contains **Pre-seeded reconnaissance**, treat those host/service/surface facts as known — do not spawn a child whose only job is to rediscover them
 

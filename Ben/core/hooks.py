@@ -295,6 +295,7 @@ class ReportUsageHooks(RunHooks[dict[str, Any]]):
         context: RunContextWrapper[dict[str, Any]],
         input_items: list[TResponseInputItem],
     ) -> None:
+        # M1：同标记替换，避免每轮追加过期 [TIME]。
         if context.context.get("parent_id") is not None:
             return
         from Ben.core.scan_clock import remaining_fraction, time_status_line
@@ -312,7 +313,18 @@ class ReportUsageHooks(RunHooks[dict[str, Any]]):
             parts.append(
                 f"[{_urgency(stage)}] {_wrapup_directive(context, stage)}"
             )
-        input_items.append({"role": "user", "content": " ".join(parts)})
+        payload = {"role": "user", "content": " ".join(parts)}
+        marker = "[TIME]"
+        for index, item in enumerate(input_items):
+            text = ""
+            if isinstance(item, dict):
+                content = item.get("content")
+                if isinstance(content, str):
+                    text = content
+            if marker in text:
+                input_items[index] = payload
+                return
+        input_items.append(payload)
 
     def _maybe_inject_no_progress(
         self,

@@ -1,8 +1,11 @@
 """Run 级无进展检测：内容签名，不用目录 mtime / 纯长度。
 
-签名覆盖 coverage(id,outcome)、vuln ids、todo done 计数、agent(id,status)、
+签名覆盖 coverage(id,outcome)、vuln ids、todo done+总数、agent(id,status)、
 claims(key,owner)。有在飞子 agent 时不计 stall。
 ``BEN_NO_PROGRESS_TURNS`` 默认 3；``0`` 关闭。
+
+L8：pending todo 也计入签名（总数变化），避免"只写计划不动手"被误判无进展。
+已知限制：单进程单 run；跨 run 必须 ``reset_progress_tracker()``。
 """
 
 from __future__ import annotations
@@ -23,14 +26,19 @@ logger = logging.getLogger(__name__)
 _last_sig: str | None = None
 _stall_streak: int = 0
 _no_progress_latched: bool = False
+_no_progress_reason: str | None = None
+_storage_warn_logged: bool = False
 
 
 def reset_progress_tracker() -> None:
-    """测试用。"""
+    """每次 run 开头调用；测试也会用。"""
     global _last_sig, _stall_streak, _no_progress_latched  # noqa: PLW0603
+    global _no_progress_reason, _storage_warn_logged  # noqa: PLW0603
     _last_sig = None
     _stall_streak = 0
     _no_progress_latched = False
+    _no_progress_reason = None
+    _storage_warn_logged = False
 
 
 def no_progress_threshold() -> int:
@@ -49,9 +57,14 @@ def is_no_progress_latched() -> bool:
     return _no_progress_latched
 
 
-def latch_no_progress() -> None:
-    global _no_progress_latched  # noqa: PLW0603
+def no_progress_reason() -> str | None:
+    return _no_progress_reason
+
+
+def latch_no_progress(*, reason: str = "streak") -> None:
+    global _no_progress_latched, _no_progress_reason  # noqa: PLW0603
     _no_progress_latched = True
+    _no_progress_reason = reason
 
 
 def stall_streak() -> int:
@@ -91,20 +104,21 @@ def compute_world_signature(
     except Exception:  # noqa: BLE001
         logger.debug("progress: vuln snapshot failed", exc_info=True)
 
+    # 计入 done 与总数：只写计划不动手也会改变签名（L8）。
     done_todos = 0
+    total_todos = 0
     try:
-        from Ben.tools.todo import tools as todo_tools
+        from Ben.tools.todo.tools import list_all_todos
 
-        storage = getattr(todo_tools, "_todos_storage", {})
-        if isinstance(storage, dict):
-            for by_id in storage.values():
-                if not isinstance(by_id, dict):
-                    continue
-                for todo in by_id.values():
-                    if isinstance(todo, dict) and todo.get("status") == "done":
-                        done_todos += 1
+        for todo in list_all_todos():
+            total_todos += 1
+            if todo.get("status") == "done":
+                done_todos += 1
     except Exception:  # noqa: BLE001
-        logger.debug("progress: todo snapshot failed", exc_info=True)
+        global _storage_warn_logged  # noqa: PLW0603
+        if not _storage_warn_logged:
+            logger.warning("progress: todo snapshot failed", exc_info=True)
+            _storage_warn_logged = True
 
     agent_parts: list[tuple[str, str]] = []
     if coordinator is not None:
@@ -130,6 +144,7 @@ def compute_world_signature(
         "coverage": sorted(coverage_parts),
         "vulns": sorted(vuln_ids),
         "done_todos": done_todos,
+        "total_todos": total_todos,
         "agents": sorted(agent_parts),
         "claims": sorted(claim_parts),
     }
@@ -192,7 +207,7 @@ def observe_progress(
 
     should = _stall_streak >= threshold
     if should:
-        latch_no_progress()
+        latch_no_progress(reason="streak")
     return {
         "signature": sig,
         "stall_streak": _stall_streak,

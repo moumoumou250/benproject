@@ -1,4 +1,4 @@
-"""scan_clock：deadline / endgame / remaining。"""
+"""scan_clock：deadline / endgame / remaining（墙钟）。"""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import time
 
 from Ben.core.scan_clock import (
     ENDGAME_FRACTION,
+    SCAN_DEADLINE_KEY,
     install_deadline,
     is_deadline_passed,
     is_endgame,
@@ -26,16 +27,11 @@ def test_install_and_remaining() -> None:
 
 def test_endgame_and_deadline() -> None:
     ctx: dict = {}
-    # tiny budget already mostly spent
     install_deadline(ctx, minutes=1)
-    # force deadline into the past
-    from Ben.core import scan_clock
-
-    ctx[scan_clock.SCAN_DEADLINE_KEY] = time.monotonic() - 1
+    ctx[SCAN_DEADLINE_KEY] = time.time() - 1
     assert is_deadline_passed(ctx) is True
-    # endgame: set deadline so remaining fraction < 20%
     install_deadline(ctx, minutes=10)
-    ctx[scan_clock.SCAN_DEADLINE_KEY] = time.monotonic() + (10 * 60 * ENDGAME_FRACTION * 0.5)
+    ctx[SCAN_DEADLINE_KEY] = time.time() + (10 * 60 * ENDGAME_FRACTION * 0.5)
     assert is_endgame(ctx) is True
 
 

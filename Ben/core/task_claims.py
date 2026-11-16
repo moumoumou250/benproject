@@ -9,15 +9,19 @@ from __future__ import annotations
 import json
 import logging
 import os
-import tempfile
 import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from Ben.core.jsonstore import atomic_write_json
+
 
 logger = logging.getLogger(__name__)
+
+# L5：默认 TTL = BEN_SUBAGENT_MINUTES(45) × 1.5
+DEFAULT_CLAIM_TTL_MINUTES = 67.5
 
 _claims_lock = threading.RLock()
 _claims: dict[str, dict[str, Any]] = {}
@@ -82,18 +86,8 @@ def _persist_locked() -> None:
     path = _claims_path
     if path is None:
         return
-    payload = json.dumps(_claims, ensure_ascii=False, indent=2, default=str)
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=path.parent,
-            delete=False,
-        ) as tmp:
-            tmp.write(payload)
-            tmp_path = Path(tmp.name)
-        tmp_path.replace(path)
+        atomic_write_json(path, _claims)
     except OSError:
         logger.exception("claims persist failed at %s", path)
 
@@ -136,7 +130,11 @@ def try_claim(
     key = _key_str(surface, risk_area)
     norm_s, norm_r = normalize_claim_key(surface, risk_area)
     now = time.time()
-    ttl = float(ttl_minutes) if ttl_minutes and ttl_minutes > 0 else 67.5
+    ttl = (
+        float(ttl_minutes)
+        if ttl_minutes and ttl_minutes > 0
+        else DEFAULT_CLAIM_TTL_MINUTES
+    )
     expires_at = now + ttl * 60.0
 
     with _claims_lock:

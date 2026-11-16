@@ -592,13 +592,35 @@ async def create_agent(
             ensure_ascii=False,
             default=str,
         )
-    valid_tiers = get_args(Literal["scout", "hunter", "validator", "general"])
-    if tier not in valid_tiers:
+    from Ben.core.tiers import VALID_TIERS
+    from Ben.core.task_claims import claims_enabled
+
+    if tier not in VALID_TIERS:
         return json.dumps(
             {
                 "success": False,
-                "error": f"tier must be one of {list(valid_tiers)}, got {tier!r}",
+                "error": f"tier must be one of {list(VALID_TIERS)}, got {tier!r}",
                 "agent_id": None,
+            },
+            ensure_ascii=False,
+            default=str,
+        )
+    # H9：BEN_CLAIM=1 时 hunter/general 必须带 surface×risk；scout/validator 豁免。
+    if (
+        claims_enabled()
+        and tier in ("hunter", "general")
+        and not ((surface or "").strip() and (risk_area or "").strip())
+    ):
+        return json.dumps(
+            {
+                "success": False,
+                "agent_id": None,
+                "error": (
+                    "BEN_CLAIM is on: pass both surface (endpoint/route/component) "
+                    "and risk_area for this work unit, otherwise a sibling agent "
+                    "will test the same surface. For recon use tier='scout'; "
+                    "for validation-only work use tier='validator'."
+                ),
             },
             ensure_ascii=False,
             default=str,
@@ -741,20 +763,21 @@ async def agent_finish(
 
     ruled_out_recorded: list[str] = []
     ruled_out_items: list[Any] = []
+    # H5：可选字段解析失败不得阻断终止路径。
     if ruled_out_json and str(ruled_out_json).strip():
         try:
             parsed = json.loads(ruled_out_json)
-        except json.JSONDecodeError:
-            return json.dumps(
-                {
-                    "success": False,
-                    "error": "ruled_out_json must be a JSON array of "
-                    "{surface, risk_area, evidence} objects",
-                },
-                ensure_ascii=False,
+        except json.JSONDecodeError as exc:
+            logger.warning(
+                "agent_finish: ignoring malformed ruled_out_json: %s", exc
             )
+            parsed = None
         if isinstance(parsed, list):
             ruled_out_items = parsed
+        elif parsed is not None:
+            logger.warning(
+                "agent_finish: ruled_out_json is not a list; ignoring"
+            )
     if ruled_out_items:
         from Ben.tools.coverage.tools import _record_impl
 
