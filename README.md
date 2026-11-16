@@ -352,23 +352,28 @@ recon/<host>_<时间戳>_scout/
 # 多个类型 / 加挂工具技能 / 先看会注入什么
 .\.venv\Scripts\python.exe main.py vuln "xss,csrf" --skills tooling/nuclei -t http://target.example:8080/
 .\.venv\Scripts\python.exe main.py vuln idor -t http://target.example:8080/ --dry-run
+
+# 指定漏洞检出回归：必须在报告里命中子串，否则 exit 3
+.\.venv\Scripts\python.exe main.py vuln idor -t http://target.example:8080/ `
+  --expect IDOR --expect /api/users --max-turns 10 --max-budget 0.5
 ```
 
-它只做三件事，其余全部复用普通扫描的链路（`prepare_run` → `AgentRunner` → `run_cli`），
+它做这些事，其余复用普通扫描链路（`prepare_run` → `AgentRunner` → `run_cli`），
 因此授权闸门、预检、沙箱、报告与 run 记录完全一致：
 
 1. 把 `sqli` / `SQL_Injection` / `lfi` 这类写法解析成 `vulnerabilities/<name>`；
 2. **启动前**校验技能真的存在（`_resolve_skills` 对未知名是静默跳过，不校验的话
    你会得到一次"看起来在测 SQLi、其实没加载任何 SQLi 方法论"的扫描）；
-3. 在 instruction 前拼一段 `<focused_scan>`：只开**一个**子 agent、技能挂在该子
-   agent 上、不做无关枚举、测完即 `finish_scan`。
+3. 在 instruction 前拼一段 `<focused_scan>`：技能挂在子 agent、不做无关枚举、测完即
+   `finish_scan`；
+4. **代码强制** `BEN_MAX_SUBAGENTS=1`（不只靠提示词）；
+5. 可选 `--expect`：对照 `vulnerabilities.json` 做检出判定，并打印调试摘要。
 
-边界要说清楚：**编排发生在提示词里，不是代码里**。root 仍是纯编排者，靠
-`create_agent(skills=[...])` 拉起子 agent；模型不遵守时由 `--max-turns` /
-`--max-budget` 兜底。另外只读闸门不受影响——需要请求体的探测要么走代理工具的
-`repeat_request`，要么会被 `curl -d` / `sqlmap --data` 的拒绝规则挡下。
+边界：技能聚焦仍主要靠提示词；子 agent 数量由环境变量硬闸。只读闸门不受影响——
+需要请求体的探测走 `repeat_request`，`curl -d` / `sqlmap --data` 会被拒绝。
 
-退出码：0 完成；2 类型无法解析/参数非法；其余同普通扫描（`--fail-on` 命中时 1）。
+退出码：0 完成（且 expect 全命中）；2 类型无法解析/参数非法，或 `--fail-on` 命中；
+3 `--expect` 未全部命中。
 
 ## 九、输出说明
 

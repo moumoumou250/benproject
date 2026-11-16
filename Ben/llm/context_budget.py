@@ -74,11 +74,30 @@ def output_limit(model: str) -> int:
     return _model_info(model)["max_output_tokens"] or _DEFAULT_OUTPUT_TOKENS
 
 
+def _approx_tokens(text: str) -> int:
+    """Tokenizer 不可用时的粗估：CJK≈1 token/字，其余≈4 字符/token。
+
+    旧回退用 UTF-8 字节数会把中文高估约 3 倍，导致压缩过早触发。
+    """
+    cjk = 0
+    for ch in text:
+        o = ord(ch)
+        # CJK 统一汉字 + 日文假名 + 韩文音节（覆盖 Ben 常见中文场景）。
+        if (
+            0x4E00 <= o <= 0x9FFF
+            or 0x3040 <= o <= 0x30FF
+            or 0xAC00 <= o <= 0xD7AF
+        ):
+            cjk += 1
+    rest = len(text) - cjk
+    return cjk + (rest + 3) // 4
+
+
 def count_tokens(model: str, text: str) -> int:
     """Token count for ``text`` under ``model``.
 
-    Falls back to UTF-8 byte length (a guaranteed upper bound) when LiteLLM
-    can't count, so budget checks stay conservative.
+    Falls back to a CJK-aware character estimate when LiteLLM can't count,
+    so budget checks stay usable offline without tripling Chinese cost.
     """
     if not text:
         return 0
@@ -87,4 +106,4 @@ def count_tokens(model: str, text: str) -> int:
 
         return int(litellm.token_counter(model=_lookup_key(model), text=text))
     except Exception:  # noqa: BLE001 - tokenizer may be unavailable for some models.
-        return len(text.encode("utf-8"))
+        return _approx_tokens(text)

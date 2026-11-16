@@ -1064,6 +1064,36 @@ _BASE_TOOLS: tuple[Tool, ...] = (
     stop_agent,
 )
 
+# root 纯编排：裁掉会碰目标/外网的工具面（Caido / MCP / web）。
+# shell 仍挂载但靠提示词约束。
+_ROOT_NETWORK_DROP: frozenset[str] = frozenset(
+    {
+        "web_search",
+        "web_get_contents",
+        "list_requests",
+        "view_request",
+        "repeat_request",
+        "list_sitemap",
+        "view_sitemap_entry",
+        "list_mcps",
+        "search_mcp_tools",
+        "get_mcp_tool_schema",
+        "describe_mcp",
+        "call_mcp",
+    }
+)
+
+# root 报告面只读：写报告 schema 极重（历史上可占工具 schema ~40%+），
+# 且提示词已要求子 Agent 登记、root 用 list/get 盘点。保留 list_reports / get_report。
+_ROOT_REPORT_WRITE_DROP: frozenset[str] = frozenset(
+    {
+        "create_vulnerability_report",
+        "create_dependency_report",
+        "update_vulnerability_report",
+        "delete_vulnerability_report",
+    }
+)
+
 
 # 运行时后端注册的额外工具（对齐 strix：在首次 build_agent 前注册，
 # root 与 child 都会获得；追加在基础工具之后、生命周期工具之前）。
@@ -1199,7 +1229,8 @@ def build_agent(
             parallel_tool_calls=parallel_tool_calls,
             system_prompt_context=system_prompt_context,
             supports_images=supports_images,
-            report_tool=True,
+            # root 不挂写报告工具，也不内联 reporting_discipline / 教 create_*。
+            report_tool=not is_root,
             coverage_tools=coverage_tools,
             prompts_dir=prompts_dir,
         )
@@ -1214,6 +1245,9 @@ def build_agent(
         if finish_tool is finish_scan:
             finish_tool = _without_coverage_step(finish_scan)
     if is_root:
+        # 编排者不背探测/外网/写报告 schema（提示词约束不够硬）。
+        drop = _ROOT_NETWORK_DROP | _ROOT_REPORT_WRITE_DROP
+        base_tools = [t for t in base_tools if t.name not in drop]
         tools: list[Tool] = [*base_tools, *agent_tools, finish_tool]
     else:
         tools = [*base_tools, *agent_tools, agent_finish]

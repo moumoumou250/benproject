@@ -186,13 +186,14 @@ async def send_message_to_agent(
     - Telling a child to wrap up or change course.
 
     **Don't** use for routine "hello/status" pings, for context the
-    target already has (children inherit parent history), or when
-    parent/child completion via ``agent_finish`` already covers the
-    flow. In interactive runs a message wakes the target regardless of
-    status, so a follow-up can restart a completed/stopped/failed agent.
-    In non-interactive runs a finished agent is gone for good: the call
-    fails with the target's status, and you should read its filed
-    reports (``list_reports``) or spawn a new agent instead of waiting.
+    target already has (shared notes / findings index / its ``task``),
+    or when parent/child completion via ``agent_finish`` already covers
+    the flow. In interactive runs a message wakes the target regardless
+    of status, so a follow-up can restart a completed/stopped/failed
+    agent. In non-interactive runs a finished agent is gone for good:
+    the call fails with the target's status, and you should read its
+    filed reports (``list_reports``) or spawn a new agent instead of
+    waiting.
 
     Args:
         target_agent_id: Recipient's 8-char id.
@@ -496,8 +497,9 @@ async def create_agent(
     ctx: RunContextWrapper,
     name: str,
     task: str,
-    inherit_context: bool = True,
+    inherit_context: bool = False,
     skills: list[str] | None = None,
+    minutes: float | None = None,
 ) -> str:
     """Spawn a specialist child agent to run in parallel.
 
@@ -537,11 +539,21 @@ async def create_agent(
             state it should build on rather than rediscover — what
             recon already mapped, which surfaces are already covered.
             A child that is not told what is already known repeats it.
-        inherit_context: Default ``True``. The child receives the
-            parent's input history as background; only set ``False``
-            when starting a clean-slate task.
+            Put confirmed findings / dead ends in ``task`` (or notes);
+            do not rely on dumping parent history. A short shared
+            findings index is injected automatically.
+        inherit_context: Default ``False``. Opt in only when the child
+            truly needs the parent's **undumped** reasoning that is not
+            already in notes / coverage / the ``task`` brief. Full
+            parent history is a large multiplicative cost.
         skills: List of skill names (e.g. ``["xss", "sql_injection"]``).
-            Max 5; prefer 1-3.
+            Max 5; prefer 1-3. For validation-only children: 0–1 skills,
+            put only the finding under test in ``task``, keep
+            ``inherit_context=False``.
+        minutes: Optional wall-clock time box for this child (and its
+            descendants). When omitted, ``BEN_SUBAGENT_MINUTES`` applies
+            (default 45). On expiry the child is stopped gracefully and
+            you get a time-box notice — escalate, re-scope, or park.
     """
     # 此处是工具从ctx.context取的三个东西
     inner = _ctx(ctx)
@@ -564,6 +576,12 @@ async def create_agent(
             ensure_ascii=False,
             default=str,
         )
+    if minutes is not None and minutes <= 0:
+        return json.dumps(
+            {"success": False, "error": "minutes must be > 0 when set", "agent_id": None},
+            ensure_ascii=False,
+            default=str,
+        )
 
     skill_list = list(skills or [])
     skill_error = validate_requested_skills(skill_list)
@@ -583,6 +601,7 @@ async def create_agent(
             task=task,
             skills=skill_list,
             parent_history=parent_history,
+            minutes=minutes,
         )
     except Exception as e:
         logger.exception("create_agent: scan runner failed to spawn child '%s'", name)

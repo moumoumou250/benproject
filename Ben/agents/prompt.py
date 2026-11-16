@@ -113,6 +113,32 @@ def _resolve_skills(
     return resolved
 
 
+def resolve_inlined_skills(
+    requested_skills: Sequence[str] | None = None,
+    *,
+    scan_mode: str = "blackbox",
+    is_root: bool = True,
+    is_whitebox: bool = False,
+    is_diff_scoped: bool = False,
+    report_tool: bool = True,
+    coverage_tools: bool = True,
+) -> list[str]:
+    """返回将写入 system prompt 的片段限定名（供 load_skill 去重）。
+
+    默认 ``report_tool=True`` 对齐 **子 agent**（写报告 + reporting_discipline）。
+    root 调用方须显式传 ``report_tool=False``（与 ``build_agent(is_root=True)`` 一致）。
+    """
+    return _resolve_skills(
+        requested_skills,
+        scan_mode=scan_mode,
+        is_root=is_root,
+        is_whitebox=is_whitebox,
+        is_diff_scoped=is_diff_scoped,
+        report_tool=report_tool,
+        coverage_tools=coverage_tools,
+    )
+
+
 # ---------------------------------------------------------------------------
 # 渲染上下文
 # ---------------------------------------------------------------------------

@@ -1,0 +1,278 @@
+"""Root 侧紧凑状态块：resume 已测面 + 每轮 frontier（Sapper hook 同构）。
+
+两处共用「coverage → 短行」渲染，避免 root 反复调 list_coverage / 重测旧面。
+注入策略见 :func:`inject_or_replace_frontier`：仅当次 ``input_items`` 内替换，
+签名不变则跳过，防止会话历史每轮叠 6KB。
+"""
+
+from __future__ import annotations
+
+import hashlib
+import logging
+from typing import TYPE_CHECKING, Any
+
+from Ben.core.agents import ACTIVE_STATUSES, TERMINAL_STATUSES
+from Ben.core.prompt_budget import INDEX_LINE_MAX, clip_line
+
+
+if TYPE_CHECKING:
+    from Ben.core.agents import AgentCoordinator
+
+
+logger = logging.getLogger(__name__)
+
+EXCLUDED_OUTCOMES: frozenset[str] = frozenset(
+    {"ruled_out", "no_issue_found", "not_applicable"}
+)
+
+FRONTIER_MARKER = "[Frontier status]"
+MAX_FRONTIER_CHARS = 6_000
+MAX_EXCLUDED_CHARS = 3_000
+_MAX_EXCLUDED_ROWS = 40
+_MAX_GAP_ROWS = 8
+_MAX_TODO_ROWS = 8
+_MAX_AGENT_ROWS = 8
+
+# 按 agent_id 记住上次注入的 frontier 签名，签名不变则跳过。
+_last_frontier_sig: dict[str, str] = {}
+
+
+def clear_frontier_signatures() -> None:
+    """测试用：清空节流签名。"""
+    _last_frontier_sig.clear()
+
+
+def render_excluded_coverage_brief(
+    entries: list[dict[str, Any]] | None = None,
+    *,
+    max_chars: int = MAX_EXCLUDED_CHARS,
+) -> str:
+    """Resume 用：已排除面列表 +「新证据可推翻」措辞。无条目时返回空串。"""
+    if entries is None:
+        from Ben.tools.coverage.tools import get_coverage_entries
+
+        entries = get_coverage_entries()
+
+    rows: list[str] = []
+    for entry in entries:
+        outcome = str(entry.get("outcome") or "").strip().lower()
+        if outcome not in EXCLUDED_OUTCOMES:
+            continue
+        surface = clip_line(str(entry.get("surface") or "?"), 50)
+        risk = clip_line(str(entry.get("risk_area") or "?"), 40)
+        rows.append(f"- [{outcome}] {surface} · {risk}")
+        if len(rows) >= _MAX_EXCLUDED_ROWS:
+            break
+
+    if not rows:
+        return ""
+
+    header = (
+        "## Previously excluded surfaces (resume)\n"
+        "The following coverage rows were closed in a prior segment of this run "
+        f"as {', '.join(sorted(EXCLUDED_OUTCOMES))}. Do **not** retest them by "
+        "default. New evidence may reopen a row — call `update_coverage` (or "
+        "record a fresh entry) before spending turns rediscovering the same "
+        "surface/risk_area."
+    )
+    body = "\n".join(rows)
+    omitted = sum(
+        1
+        for e in entries
+        if str(e.get("outcome") or "").strip().lower() in EXCLUDED_OUTCOMES
+    ) - len(rows)
+    if omitted > 0:
+        body += f"\n- … {omitted} more excluded row(s); call list_coverage for the rest"
+
+    text = f"{header}\n{body}"
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 1].rstrip() + "…"
+
+
+def merge_resume_instruction(
+    user_instruction: str | None,
+    *,
+    excluded_brief: str | None = None,
+) -> str:
+    """把已测面 brief 与用户 resume instruction 合并；任一方非空即返回可发送文本。"""
+    brief = excluded_brief if excluded_brief is not None else render_excluded_coverage_brief()
+    user = (user_instruction or "").strip()
+    if brief and user:
+        return f"{brief}\n\n{user}"
+    return brief or user
+
+
+def _open_todos() -> list[dict[str, Any]]:
+    try:
+        from Ben.tools.todo import tools as todo_mod
+
+        with todo_mod._todos_io_lock:
+            flat: list[dict[str, Any]] = []
+            for by_id in todo_mod._todos_storage.values():
+                for todo in by_id.values():
+                    status = str(todo.get("status") or "pending")
+                    if status in {"pending", "in_progress"}:
+                        flat.append(dict(todo))
+            flat.sort(key=todo_mod._todo_sort_key)
+            return flat
+    except Exception:  # noqa: BLE001 - frontier 失败不应阻断 LLM 调用
+        logger.debug("frontier: todo snapshot failed", exc_info=True)
+        return []
+
+
+def _coverage_gaps(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    gaps: list[dict[str, Any]] = []
+    for entry in entries:
+        if str(entry.get("outcome") or "") != "needs_follow_up":
+            continue
+        gaps.append(
+            {
+                "surface": entry.get("surface", ""),
+                "risk_area": entry.get("risk_area", ""),
+                "detail": entry.get("evidence") or "needs follow-up",
+            }
+        )
+    return gaps
+
+
+def _agent_lines(coordinator: AgentCoordinator | None) -> list[str]:
+    if coordinator is None:
+        return []
+    lines: list[str] = []
+    try:
+        items = [
+            (aid, coordinator.statuses.get(aid), coordinator.names.get(aid, aid))
+            for aid, parent in coordinator.parent_of.items()
+            if parent is not None
+        ]
+    except Exception:  # noqa: BLE001
+        return []
+    # 在飞优先，其次刚终结的
+    active = [(a, s, n) for a, s, n in items if s in ACTIVE_STATUSES]
+    terminal = [(a, s, n) for a, s, n in items if s in TERMINAL_STATUSES]
+    for aid, status, name in (*active, *terminal)[:_MAX_AGENT_ROWS]:
+        lines.append(f"- agent {aid} ({clip_line(str(name), 40)}): {status}")
+    return lines
+
+
+def render_frontier_block(
+    *,
+    coordinator: AgentCoordinator | None = None,
+    entries: list[dict[str, Any]] | None = None,
+    max_chars: int = MAX_FRONTIER_CHARS,
+) -> str:
+    """≤6KB 的 root 编排状态块（coverage 缺口 / 未决 todo / agent 摘要）。"""
+    if entries is None:
+        try:
+            from Ben.tools.coverage.tools import get_coverage_entries
+
+            entries = get_coverage_entries()
+        except Exception:  # noqa: BLE001
+            entries = []
+
+    lines: list[str] = [
+        FRONTIER_MARKER,
+        "Orchestration snapshot only — do not probe the target yourself; "
+        "delegate via create_agent / send_message_to_agent / stop_agent.",
+    ]
+
+    gaps = _coverage_gaps(entries)
+    lines.append("## Coverage gaps (needs_follow_up)")
+    if gaps:
+        for gap in gaps[:_MAX_GAP_ROWS]:
+            surface = clip_line(str(gap.get("surface") or "?"), 40)
+            risk = clip_line(str(gap.get("risk_area") or "?"), 30)
+            detail = clip_line(str(gap.get("detail") or ""), INDEX_LINE_MAX)
+            lines.append(f"- {surface} · {risk}" + (f" — {detail}" if detail else ""))
+        omitted = len(gaps) - _MAX_GAP_ROWS
+        if omitted > 0:
+            lines.append(f"- … {omitted} more; call list_coverage")
+    else:
+        lines.append("- (none)")
+
+    excluded_n = sum(
+        1 for e in entries if str(e.get("outcome") or "").lower() in EXCLUDED_OUTCOMES
+    )
+    open_n = sum(1 for e in entries if str(e.get("outcome") or "") == "needs_follow_up")
+    reported_n = sum(1 for e in entries if str(e.get("outcome") or "") == "reported")
+    lines.append(
+        f"## Coverage counts: total={len(entries)} open={open_n} "
+        f"excluded={excluded_n} reported={reported_n}"
+    )
+
+    todos = _open_todos()
+    lines.append("## Open todos")
+    if todos:
+        for todo in todos[:_MAX_TODO_ROWS]:
+            status = todo.get("status", "pending")
+            pri = todo.get("priority", "normal")
+            title = clip_line(str(todo.get("title") or todo.get("content") or "?"), 60)
+            lines.append(f"- [{status}/{pri}] {title}")
+        omitted = len(todos) - _MAX_TODO_ROWS
+        if omitted > 0:
+            lines.append(f"- … {omitted} more; call list_todos")
+    else:
+        lines.append("- (none)")
+
+    agent_lines = _agent_lines(coordinator)
+    lines.append("## Sub-agents")
+    if agent_lines:
+        lines.extend(agent_lines)
+    else:
+        lines.append("- (none)")
+
+    text = "\n".join(lines)
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 1].rstrip() + "…"
+
+
+def frontier_content_signature(block: str) -> str:
+    """短签名：用于节流（内容未变则不重复注入）。"""
+    # 去掉纯空白差异
+    normalized = "\n".join(line.rstrip() for line in block.splitlines())
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+
+
+def _item_text(item: Any) -> str:
+    if isinstance(item, dict):
+        content = item.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for part in content:
+                if isinstance(part, dict) and isinstance(part.get("text"), str):
+                    parts.append(part["text"])
+                elif isinstance(part, str):
+                    parts.append(part)
+            return "\n".join(parts)
+    return ""
+
+
+def inject_or_replace_frontier(
+    input_items: list[Any],
+    block: str,
+    *,
+    agent_id: str,
+) -> bool:
+    """在 ``input_items`` 内替换或追加 frontier 块。
+
+    返回是否写入了新内容。签名与上次相同则跳过（即使用户历史里已有旧块也不再叠）。
+    """
+    if not block.strip() or FRONTIER_MARKER not in block:
+        return False
+    sig = frontier_content_signature(block)
+    if _last_frontier_sig.get(agent_id) == sig:
+        return False
+
+    payload = {"role": "user", "content": block}
+    for index, item in enumerate(input_items):
+        if FRONTIER_MARKER in _item_text(item):
+            input_items[index] = payload
+            _last_frontier_sig[agent_id] = sig
+            return True
+    input_items.append(payload)
+    _last_frontier_sig[agent_id] = sig
+    return True

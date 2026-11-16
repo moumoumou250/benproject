@@ -14,6 +14,7 @@ from typing import Any
 
 from agents import RunContextWrapper, function_tool
 
+from Ben.core.prompt_budget import LIST_PREVIEW_CHARS
 from Ben.tools.nullish import clean_optional
 
 
@@ -23,7 +24,7 @@ logger = logging.getLogger(__name__)
 _notes_storage: dict[str, dict[str, Any]] = {}
 _VALID_NOTE_CATEGORIES = ["general", "findings", "methodology", "questions", "plan", "wiki"]
 _notes_lock = threading.RLock()
-_DEFAULT_CONTENT_PREVIEW_CHARS = 280
+_DEFAULT_CONTENT_PREVIEW_CHARS = LIST_PREVIEW_CHARS  # 索引层短 preview
 _NOTE_ID_GENERATION_ATTEMPTS = 1024
 
 _notes_path: Path | None = None
@@ -404,7 +405,7 @@ async def list_notes(
     ``tags=["sqli"]`` returns notes that are *both* in the findings
     category AND have at least one of those tags.
 
-    By default each entry includes a ``content_preview`` (first 280
+    By default each entry includes a ``content_preview`` (first 90
     chars). Set ``include_content=True`` to get full bodies — useful
     when you need to scan many notes; expensive in tokens for large
     notes.

@@ -13,14 +13,13 @@ prepare_run → run_cli` 路径。因此本模块**不碰** `Ben/core`、`Ben/ag
 `Ben/tools`：授权闸门、预检、沙箱、报告、run 记录、`--fail-on` 退出码全部复用，
 差异只体现在提示词里。
 
-编排为什么在 prompt 而不是代码里
---------------------------------
-root agent 是纯编排者（``Ben/skills/coordination/root_agent.md``，并由
-``tests/test_root_prompt_policy.py`` 约束），子 agent 由它经
-``create_agent(skills=[...])`` 拉起。聚焦模式**不新建编排图**，只是把"只开
-一个子 agent、只挂这几个技能"写进指令。模型不遵守时靠 ``--max-turns`` /
-``--max-budget`` 兜底，而不是靠代码断言——这是 A 档刻意的取舍：用 4 行分发
-代码换来端到端可用，代价是"聚焦"是提示词约束而非代码强制。
+编排与调试闸门
+--------------
+root agent 是纯编排者（``Ben/skills/coordination/root_agent.md``），子 agent
+由它经 ``create_agent(skills=[...])`` 拉起。聚焦指令仍写在 prompt 里；此外
+**代码强制** ``BEN_MAX_SUBAGENTS=1``（防模型偷开多个子 agent）。指定漏洞回
+归用 ``--expect PATTERN``：跑完对照 ``vulnerabilities.json``，未命中退出码
+3；``--fail-on`` 仍是「有洞失败」（退出码 2），极性相反。
 
 为什么必须前置校验
 ------------------
@@ -37,6 +36,7 @@ SQLi 方法论"的扫描。所以这里用 ``resolve_skill_name`` 硬校验，�
     python main.py vuln sqli -t http://target.example:8080/
     python main.py vuln xss,csrf -t http://target.example:8080/ --dry-run
     python main.py vuln idor -t http://target.example:8080/ --max-turns 8 --max-budget 0.3
+    python main.py vuln idor -t http://target/ --expect 'IDOR' --expect '/api/users' --max-turns 10
 """
 
 from __future__ import annotations
@@ -281,13 +281,33 @@ def build_parser() -> argparse.ArgumentParser:
         type=str.lower,
         choices=["critical", "high", "medium", "low", "info"],
         metavar="SEVERITY",
-        help="发现该等级及以上漏洞时以退出码 1 结束（CI 门禁）。",
+        help="发现该等级及以上漏洞时以退出码 2 结束（CI：有洞失败）。",
+    )
+    parser.add_argument(
+        "--expect",
+        action="append",
+        metavar="PATTERN",
+        help=(
+            "检出回归：vulnerabilities.json 中须至少一条命中该子串"
+            "（匹配 title/endpoint/cwe/…，可重复或逗号分隔）。"
+            "全部命中才算过；未命中退出码 3。与 --fail-on 极性相反。"
+        ),
     )
     parser.add_argument(
         "--workspace-file",
         action="append",
         metavar="PATH[:DEST]",
         help="扫描前把本机文件放进沙箱 /workspace。",
+    )
+    parser.add_argument(
+        "--seed",
+        metavar="PATH",
+        help="注入 recon/scout 先验产物（同主命令 --seed）。",
+    )
+    parser.add_argument(
+        "--no-seed",
+        action="store_true",
+        help="禁止自动注入 recon/scout 种子。",
     )
     parser.add_argument("--skip-preflight", action="store_true", help="跳过目标可达性预检。")
     parser.add_argument(
@@ -354,6 +374,8 @@ def _build_run_args(
     字段齐了就能直接复用整条链路（含 fail_on 与 run 记录）。
     """
     targets_info = _collect_targets(ns, parser)
+    from Ben.interface.cli.debug_expect import normalize_expect_patterns
+
     args = argparse.Namespace(
         target="",
         targets=None,
@@ -369,9 +391,13 @@ def _build_run_args(
         non_interactive=True,
         workspace_file=ns.workspace_file,
         workspace_files=[],
+        seed=getattr(ns, "seed", None),
+        no_seed=bool(getattr(ns, "no_seed", False)),
         max_budget_usd=ns.max_budget_usd,
         max_turns=ns.max_turns,
         fail_on=ns.fail_on,
+        expect=normalize_expect_patterns(getattr(ns, "expect", None)),
+        debug_summary=True,  # vuln 调试入口默认打印跑完摘要
         config=ns.config,
         mcp_config=ns.mcp_config,
         mcp_server=ns.mcp_server,
@@ -447,6 +473,9 @@ def run_vuln(argv: list[str], run_task: Callable[[Any], int] | None = None) -> i
         print(
             f"扫描模式：{args.scan_mode} · 轮数：{args.max_turns or '默认'} · 预算：{args.max_budget_usd or '不限'}"
         )
+        print("子 agent 上限：BEN_MAX_SUBAGENTS=1（vuln 强制，防发散）")
+        if args.expect:
+            print(f"expect：{args.expect}（未全部命中 → exit 3）")
         print("\n--- instruction ---")
         print(instruction)
         return 0
@@ -460,6 +489,8 @@ def run_vuln(argv: list[str], run_task: Callable[[Any], int] | None = None) -> i
 
     import os
 
+    # 聚焦调试：代码强制单子 agent（提示词约束不够硬）。
+    os.environ["BEN_MAX_SUBAGENTS"] = "1"
     if ns.mcp_config:
         os.environ["BEN_MCP_CONFIG"] = str(ns.mcp_config)
     if ns.mcp_server:

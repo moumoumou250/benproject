@@ -1012,6 +1012,8 @@ class AgentRunner:
                 # 运行时上下文（图工具/notes/todo/coverage 经 ctx.context 取
                 # coordinator 与身份；proxy 工具取 caido_client；MCP 派发
                 # 工具取 mcp_registry）
+                from Ben.agents.prompt import resolve_inlined_skills
+
                 context: dict = {
                     "coordinator": coordinator,
                     "sandbox_session": sandbox_session,
@@ -1028,6 +1030,22 @@ class AgentRunner:
                     "allowed_targets": settings.allowed_targets,
                     "command_timeout": settings.command_timeout,
                     "target": target,
+                    "scan_mode": self.scan_mode,
+                    "is_whitebox": is_whitebox,
+                    "is_diff_scoped": is_diff_scoped,
+                    # 与 root system prompt 实际内联片段一致，供 load_skill 跳过重复加载。
+                    "inlined_skills": set(
+                        resolve_inlined_skills(
+                            [],
+                            scan_mode=self.scan_mode,
+                            is_root=True,
+                            is_whitebox=is_whitebox,
+                            is_diff_scoped=is_diff_scoped,
+                            # 与 build_agent(is_root=True) 一致：root 不内联写报告纪律。
+                            report_tool=False,
+                            coverage_tools=True,
+                        )
+                    ),
                     SUBAGENT_TURN_LIMITS_KEY: {},
                 }
 
@@ -1073,24 +1091,29 @@ class AgentRunner:
                 # resume 时 SDK 从 agents.db 回放 root 历史，不再重投 root_task。
                 initial_input: Any = [] if is_resume else root_task
 
-                # Resume + 新 --instruction：SDK 回放驱动 root（initial_input=[]），
-                # 新 instruction 否则会被静默忽略；注入为 root 会话里的新用户
-                # 消息（对齐 strix runner L626-645）。
-                resume_instruction = str(scan_config.get("resume_instruction") or "").strip()
-                if is_resume and resume_instruction:
-                    await coordinator.send(
-                        root_id,
-                        {
-                            "from": "user",
-                            "type": "instruction",
-                            "priority": "high",
-                            "content": resume_instruction,
-                        },
+                # Resume：合并用户 --instruction 与「已排除面」brief（coverage 已
+                # 在上方 hydrate）。即使用户 instruction 为空，只要有已排除面也要
+                # 注入，避免续跑把 ruled_out / no_issue_found 全盘重测。
+                if is_resume:
+                    from Ben.core.frontier import merge_resume_instruction
+
+                    resume_instruction = merge_resume_instruction(
+                        str(scan_config.get("resume_instruction") or "")
                     )
-                    logger.info(
-                        "Resume: 注入新 instruction 到 root SDK session（len=%d）",
-                        len(resume_instruction),
-                    )
+                    if resume_instruction:
+                        await coordinator.send(
+                            root_id,
+                            {
+                                "from": "user",
+                                "type": "instruction",
+                                "priority": "high",
+                                "content": resume_instruction,
+                            },
+                        )
+                        logger.info(
+                            "Resume: 注入 instruction/已测面到 root SDK session（len=%d）",
+                            len(resume_instruction),
+                        )
 
                 async with coordinator._lock:
                     root_status = coordinator.statuses.get(root_id)

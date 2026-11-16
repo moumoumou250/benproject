@@ -94,53 +94,44 @@ def is_context_overflow(exc: BaseException) -> bool:
 
 
 _SUMMARY_INSTRUCTIONS = """\
-You are compacting the earlier part of an autonomous security-testing agent's \
-conversation so it fits the model context window. Produce a dense, factual \
-record that lets the agent continue with no loss of important state.
+You are compacting earlier turns of an autonomous security-testing agent so \
+the session fits the context window. Produce a DENSE operator state — short \
+bullets, no prose paragraphs, no hedging. Dropped findings lose vulns; keep \
+every distinct finding/credential/dead-end as its own bullet with exact values \
+(URLs, params, payloads, secrets) copied verbatim. Do not invent. Do not \
+describe this compaction process.
 
-This is a security engagement: dropped findings mean lost vulnerabilities. Be \
-EXHAUSTIVE, not concise. Enumerate every distinct item as its own bullet — \
-never merge, deduplicate, generalise, or omit distinct findings, credentials, \
-or dead ends, even if they seem minor or repetitive. If the source mentions \
-five vulnerabilities, list five. Copy exact values verbatim: URLs, endpoints, \
-file paths, parameters, payloads, credentials, tokens, keys, hashes, cracked \
-passwords, software versions, and error messages — never paraphrase or \
-placeholder them. Do not invent anything and do not describe this compaction \
-process.
-
-Return Markdown with exactly these sections:
+Return Markdown with exactly these sections (use "(none)" when empty):
 
 ## Objective
-The overall goal and target scope.
+One or two lines: goal + target scope.
 
 ## Vulnerabilities & Findings
-One bullet per DISTINCT vulnerability or finding (SQLi, XSS, SSRF, auth bypass, \
-misconfig, etc.). For each: type, exact location (URL/endpoint/param/file), the \
-verbatim payload or proof, confirmation status, and impact. List them all.
+- type | location | payload/proof | status | impact
 
 ## Credentials & Secrets
-One bullet per credential, secret, API key, token, hash, or cracked password, \
-copied verbatim with where it applies. Write "(none)" only if truly none.
+- secret | where it applies
 
 ## System & Recon Details
-Architecture, tech stack, versions, discovered endpoints/paths/params, and \
-other weak points worth keeping.
+- stack/versions/endpoints worth keeping (one line each)
 
 ## Work State
-- Completed: what has been verified or finished.
-- Active: what is in progress right now.
-- Blocked: anything stuck and why.
+- Completed: ...
+- Active: ...
+- Blocked: ...
 
 ## Failed Attempts & Dead Ends
-One bullet per approach already tried that did not work (including WAF blocks, \
-filtered inputs, non-exploitable leads) so they are not repeated. Write \
-"(none)" only if truly none.
+- approach | why it failed
 
 ## Next Move
-The concrete next step(s) the agent intended to take.
+Concrete next step(s).
 
 ## Relevant Files
-Files/notes/reports created or modified and their purpose."""
+path — purpose
+
+After the Markdown, output ONE final line that is valid JSON (no fence), merging \
+state for machine use:
+{"findings":[{"id":"...","title":"...","where":"..."}],"creds":[{"value":"...","where":"..."}],"dead_ends":["..."],"next":"..."}"""
 
 
 def _content_text(content: Any) -> str:
@@ -247,8 +238,17 @@ def _fit_to_tokens(model: str, text: str, max_tokens: int) -> str:
 
 
 def _summary_output_tokens(model: str) -> int:
-    """Summary output allowance, capped at the model's own output limit."""
-    return min(load_settings().context.summary_max_tokens, output_limit(model))
+    """Summary output allowance：配置值、窗口 5%、模型输出上限三者取小。"""
+    configured = load_settings().context.summary_max_tokens
+    window_cap = max(512, int(context_window(model) * 0.05))
+    return min(configured, window_cap, output_limit(model))
+
+
+def _summary_model_name(agent_model: str) -> str:
+    """压缩摘要优先走 flash 档；未配置 BEN_FLASH_MODEL 时回退当前 agent 模型。"""
+    llm = getattr(load_settings(), "llm", None)
+    flash = str(getattr(llm, "flash_model", None) or "").strip()
+    return flash or agent_model
 
 
 def _summary_input_budget(model: str, previous: str | None) -> int:
@@ -301,39 +301,49 @@ def _extract_text(response: ModelResponse) -> str:
 
 async def _summarize(model: str, prompt: str, max_tokens: int) -> str | None:
     llm = load_settings().llm
+    summary_model = _summary_model_name(model)
+    flash_name = str(getattr(llm, "flash_model", None) or "").strip()
+    # flash 档可配独立凭据；未配 flash 时与主链路同用默认 BenProvider。
+    if flash_name and summary_model == flash_name:
+        provider = BenProvider(
+            api_key=getattr(llm, "flash_api_key", None) or None,
+            base_url=getattr(llm, "flash_api_base", None) or None,
+        )
+    else:
+        provider = BenProvider()
     model_settings = make_model_settings(
         None,
-        model_name=model,
-        request_timeout=llm.timeout,
+        model_name=summary_model,
+        request_timeout=getattr(llm, "timeout", None),
         prompt_cache=False,
-        extra_headers=llm.extra_headers,
-        extra_body=llm.extra_body,
+        extra_headers=getattr(llm, "extra_headers", None),
+        extra_body=getattr(llm, "extra_body", None),
         has_tools=False,
     ).resolve(ModelSettings(max_tokens=max_tokens))
     try:
-        response = (
-            await BenProvider()
-            .get_model(model)
-            .get_response(
-                system_instructions=None,
-                input=prompt,
-                model_settings=model_settings,
-                tools=[],
-                output_schema=None,
-                handoffs=[],
-                tracing=ModelTracing.DISABLED,
-                previous_response_id=None,
-                conversation_id=None,
-                prompt=None,
-            )
+        response = await provider.get_model(summary_model).get_response(
+            system_instructions=None,
+            input=prompt,
+            model_settings=model_settings,
+            tools=[],
+            output_schema=None,
+            handoffs=[],
+            tracing=ModelTracing.DISABLED,
+            previous_response_id=None,
+            conversation_id=None,
+            prompt=None,
         )
     except Exception:
-        logger.exception("compaction summary call failed for model %s", model)
+        logger.exception("compaction summary call failed for model %s", summary_model)
         return None
     content = _extract_text(response).strip()
     if not content:
         logger.warning("compaction summary returned no content")
         return None
+    # 再按输出预算裁一次字符，防止模型无视稠密指令灌散文。
+    max_chars = max(800, max_tokens * 4)
+    if len(content) > max_chars:
+        content = content[:max_chars].rstrip() + "\n[truncated]"
     return content
 
 

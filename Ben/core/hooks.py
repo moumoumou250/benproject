@@ -239,6 +239,28 @@ class ReportUsageHooks(RunHooks[dict[str, Any]]):
             self._maybe_warn_budget(context, input_items)
         except Exception:
             logger.exception("budget/turn warning injection failed")
+        try:
+            self._maybe_inject_frontier(context, input_items)
+        except Exception:
+            logger.exception("frontier status injection failed")
+
+    def _maybe_inject_frontier(
+        self,
+        context: RunContextWrapper[dict[str, Any]],
+        input_items: list[TResponseInputItem],
+    ) -> None:
+        """Root 每轮注入 ≤6KB frontier；签名不变则跳过；同标记块替换不叠写。"""
+        # root = 无 parent；子 agent 不注入（避免每条分支各背一份全局账本）。
+        if context.context.get("parent_id") is not None:
+            return
+        agent_id = context.context.get("agent_id")
+        if not isinstance(agent_id, str) or not agent_id:
+            return
+        from Ben.core.frontier import inject_or_replace_frontier, render_frontier_block
+
+        coordinator = coordinator_from_context(context.context)
+        block = render_frontier_block(coordinator=coordinator)
+        inject_or_replace_frontier(input_items, block, agent_id=agent_id)
 
     def _pause_if_operator_paused(self, context: RunContextWrapper[dict[str, Any]]) -> None:
         coordinator = coordinator_from_context(context.context)

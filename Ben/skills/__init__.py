@@ -211,13 +211,36 @@ def list_skills() -> dict[str, Skill]:
     return dict(_discover())
 
 
+# system prompt 里 <available_skills> 只需要索引层；正文经 load_skill 按需拉。
+_CATALOG_DESCRIPTION_MAX = 80
+
+
+def _catalog_description(text: str, *, limit: int = _CATALOG_DESCRIPTION_MAX) -> str:
+    """把目录 description 裁到短索引句（超出加省略号）。"""
+    desc = (text or "").strip()
+    if len(desc) <= limit:
+        return desc
+    # 预留 "..."；尽量在空白处切断，避免半截词。
+    cut = desc[: max(1, limit - 3)].rstrip()
+    space = cut.rfind(" ")
+    if space >= max(16, (limit - 3) // 2):
+        cut = cut[:space].rstrip()
+    return cut + "..."
+
+
 def skill_catalog() -> dict[str, list[dict[str, str]]]:
-    """生成分类目录：{分类: [{name, description}, ...]}（只含元数据，不含正文）。"""
+    """生成分类目录：{分类: [{name, description}, ...]}（只含元数据，不含正文）。
+
+    description 截到约 80 字符，避免目录块占满 system prompt 前缀。
+    """
     catalog: dict[str, list[dict[str, str]]] = {}
     for skill in sorted(_discover().values(),
                         key=lambda s: (s.category, s.name)):
         catalog.setdefault(skill.category, []).append(
-            {"name": skill.name, "description": skill.description}
+            {
+                "name": skill.name,
+                "description": _catalog_description(skill.description),
+            }
         )
     return catalog
 

@@ -142,6 +142,18 @@ def prepare_run(args: argparse.Namespace) -> dict[str, Any]:
             f"{diff.instruction_block}\n\n{instruction}" if instruction else diff.instruction_block
         )
 
+    # recon/scout 种子：把已有侦察事实幂等注入 instruction + /workspace/preseed。
+    # resume 分支上面已提前返回，不会重复灌种。
+    try:
+        instruction, workspace_files = _maybe_apply_recon_seed(
+            args,
+            targets_info=targets_info,
+            instruction=instruction,
+            workspace_files=workspace_files,
+        )
+    except ValueError as exc:
+        raise PreparationError(f"加载 recon/scout 种子失败：{exc}") from exc
+
     prepared = {
         "run_name": run_name,
         "targets_info": targets_info,
@@ -154,6 +166,36 @@ def prepare_run(args: argparse.Namespace) -> dict[str, Any]:
     }
     _store_on_args(args, prepared)
     return prepared
+
+
+def _maybe_apply_recon_seed(
+    args: argparse.Namespace,
+    *,
+    targets_info: list[dict[str, Any]],
+    instruction: str | None,
+    workspace_files: list[dict[str, Any]],
+) -> tuple[str | None, list[dict[str, Any]]]:
+    """桥接 ``Ben/interface/cli/seed.py``：有产物才改 instruction / workspace。"""
+    from Ben.interface.cli.seed import apply_seed_to_prepared, resolve_seed_for_run
+
+    bundle = resolve_seed_for_run(
+        targets_info=targets_info,
+        seed_arg=getattr(args, "seed", None),
+        no_seed=bool(getattr(args, "no_seed", False)),
+    )
+    if bundle is None:
+        return instruction, workspace_files
+    logger.info(
+        "recon seed applied: %s (%s, %d facts)",
+        bundle.source_path,
+        bundle.kind,
+        len(bundle.facts),
+    )
+    return apply_seed_to_prepared(
+        instruction=instruction,
+        workspace_files=workspace_files,
+        bundle=bundle,
+    )
 
 
 def _store_on_args(args: argparse.Namespace, prepared: dict[str, Any]) -> None:

@@ -8,8 +8,8 @@ is injected by the runner via :func:`configure_spill_writer`.
 
 from __future__ import annotations
 
+import hashlib
 import logging
-import uuid
 from typing import TYPE_CHECKING
 
 
@@ -18,6 +18,11 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+def content_addressed_id(text: str) -> str:
+    """Spill id = sha256(text) 前 32 hex，与 UUID 路径宽度对齐、同内容复用同一文件。"""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:32]
 
 _TRUNCATION_NOTICE = "[... {lines} lines ({bytes} bytes) truncated ...]"
 _WORKSPACE_SPILL_NOTICE = (
@@ -156,7 +161,7 @@ async def bound_and_store(text: str, *, max_lines: int, max_bytes: int) -> str:
 
     writer = _spill.get("writer")
     if writer is not None:
-        path = await writer(uuid.uuid4().hex, text)
+        path = await writer(content_addressed_id(text), text)
         if path is not None:
             notice = _WORKSPACE_SPILL_NOTICE.format(
                 lines=dropped_lines, bytes=dropped_bytes, path=path

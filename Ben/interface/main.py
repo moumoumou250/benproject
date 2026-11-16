@@ -402,35 +402,64 @@ def _run_task(args) -> int:
     live = not bool(getattr(args, "verbose", False)) and sys.stdout.isatty()
     result = asyncio.run(run_cli(args, prepared, live=live))
 
+    from Ben.core.paths import run_dir_for
+    from Ben.interface.cli.debug_expect import (
+        EXIT_EXPECT_MISS,
+        format_debug_summary,
+        load_findings_json,
+        match_expect,
+        normalize_expect_patterns,
+    )
+
+    effective_run_name = resume_run_name or run_name
+    expect_patterns = normalize_expect_patterns(getattr(args, "expect", None))
+    want_summary = bool(getattr(args, "debug_summary", False)) or bool(expect_patterns)
+
     if result is None:
         print("[INFO] 本次运行未产出最终结果（预算耗尽或被中断），详见 strix_runs 目录。")
-        return 0
+    else:
+        print("\n" + "=" * 70)
+        print(result.report_text)
+        print("=" * 70)
+        print(f"结束原因：{result.stopped_reason}；工具调用：{len(result.invocations)} 次")
+        print(f"报告文件：{result.report_path}")
+        print(f"轨迹文件：{result.trace_path}")
 
-    print("\n" + "=" * 70)
-    print(result.report_text)
-    print("=" * 70)
-    print(f"结束原因：{result.stopped_reason}；工具调用：{len(result.invocations)} 次")
-    print(f"报告文件：{result.report_path}")
-    print(f"轨迹文件：{result.trace_path}")
+    findings: list = []
+    if effective_run_name:
+        findings = load_findings_json(run_dir_for(effective_run_name) / "vulnerabilities.json")
+    elif result is not None:
+        findings = load_findings_json(result.report_path.parent / "vulnerabilities.json")
+
+    expect_ok: bool | None = None
+    expect_missing: list[str] = []
+    expect_hits: dict = {}
+    if expect_patterns:
+        expect_ok, expect_missing, expect_hits = match_expect(findings, expect_patterns)
+
+    if want_summary and effective_run_name:
+        print()
+        print(
+            format_debug_summary(
+                run_name=effective_run_name,
+                findings=findings,
+                expect_patterns=expect_patterns,
+                invocations=list(getattr(result, "invocations", None) or []),
+                expect_ok=expect_ok,
+                expect_missing=expect_missing,
+                expect_hits=expect_hits,
+            )
+        )
+
+    # expect 优先于 fail_on：调试「必须检出」时先报未命中。
+    if expect_patterns and expect_ok is False:
+        print(f"[FAIL] --expect 未全部命中：{', '.join(expect_missing)}；退出码 {EXIT_EXPECT_MISS}")
+        return EXIT_EXPECT_MISS
 
     fail_on = getattr(args, "fail_on", None)
-    if fail_on is not None:
-        import json
-
-        from Ben.core.paths import run_dir_for
-
-        effective_run_name = resume_run_name or (run_name if "run_name" in locals() else "")
-        if effective_run_name:
-            vulnerabilities_path = run_dir_for(effective_run_name) / "vulnerabilities.json"
-        else:
-            vulnerabilities_path = result.report_path.parent / "vulnerabilities.json"
-        try:
-            findings = json.loads(vulnerabilities_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            findings = []
-        if findings_fail_build(findings if isinstance(findings, list) else [], fail_on):
-            print(f"[FAIL] 存在 {fail_on} 及以上等级漏洞，退出码 2")
-            return 2
+    if fail_on is not None and findings_fail_build(findings, fail_on):
+        print(f"[FAIL] 存在 {fail_on} 及以上等级漏洞，退出码 2")
+        return 2
     return 0
 
 

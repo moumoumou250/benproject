@@ -19,6 +19,7 @@
   - ``--max-budget`` / ``--max-turns``：成本与轮次上限；
   - ``--fail-on``：按最高漏洞等级决定 CI 退出码；
   - ``--workspace-file PATH[:DEST]``：扫描前把本机文件放进 /workspace；
+  - ``--seed PATH`` / ``--no-seed``：注入或关闭 recon/scout 先验种子；
   - ``--mcp-config`` / ``--mcp-server`` / ``--mcp-exclude``：运行级 MCP 选择；
   - ``-n/--non-interactive``：关闭 TUI，跑完即退。
 """
@@ -130,6 +131,20 @@ def parse_arguments() -> argparse.Namespace:
         "例如 --workspace-file ./wordlist.txt:lists/wordlist.txt。",
     )
     parser.add_argument(
+        "--seed",
+        metavar="PATH",
+        help=(
+            "注入先验侦察产物（scout.json / recon.json / facts.jsonl 或其目录）。"
+            "省略本参数时，若 recon/<host>_* 下有匹配目标的最新产物则自动注入；"
+            "用 --no-seed 关闭。"
+        ),
+    )
+    parser.add_argument(
+        "--no-seed",
+        action="store_true",
+        help="禁止自动/显式注入 recon/scout 种子（与 --seed 互斥）。",
+    )
+    parser.add_argument(
         "--max-budget",
         "--max-budget-usd",
         dest="max_budget_usd",
@@ -149,7 +164,22 @@ def parse_arguments() -> argparse.Namespace:
         type=str.lower,
         choices=["critical", "high", "medium", "low", "info"],
         metavar="SEVERITY",
-        help="发现该等级及以上的漏洞时以退出码 1 结束（CI 门禁）。",
+        help="发现该等级及以上的漏洞时以退出码 2 结束（CI：有洞失败）。",
+    )
+    parser.add_argument(
+        "--expect",
+        action="append",
+        metavar="PATTERN",
+        help=(
+            "检出回归：须至少一条报告命中该子串（title/endpoint/cwe/…；"
+            "可重复或逗号分隔）。全部命中才过，未命中退出码 3。"
+            "与 --fail-on 极性相反。常与 -n 联用。"
+        ),
+    )
+    parser.add_argument(
+        "--debug-summary",
+        action="store_true",
+        help="跑完打印调试摘要（发现列表 / expect 命中 / 闸门拒绝近似数）。",
     )
     parser.add_argument(
         "--config",
@@ -214,10 +244,21 @@ def parse_arguments() -> argparse.Namespace:
     if getattr(args, "preflight_timeout", 5.0) <= 0:
         parser.error("--preflight-timeout must be greater than 0")
 
-    # --fail-on 只在 headless 有意义：没有终端时 main() 本来就走 headless，
+    # --fail-on / --expect 只在 headless 有意义：没有终端时 main() 本来就走 headless，
     # 只有 TUI 真要打开时该参数才是错配（对齐 strix）。
     if args.fail_on and not args.non_interactive and terminal_attached():
         parser.error("--fail-on only applies to headless runs; add -n/--non-interactive.")
+    if getattr(args, "expect", None) and not args.non_interactive and terminal_attached():
+        parser.error("--expect only applies to headless runs; add -n/--non-interactive.")
+
+    from Ben.interface.cli.debug_expect import normalize_expect_patterns
+
+    args.expect = normalize_expect_patterns(getattr(args, "expect", None))
+    # 有 expect 时默认打开调试摘要；显式 --debug-summary 也行。
+    if args.expect:
+        args.debug_summary = True
+    else:
+        args.debug_summary = bool(getattr(args, "debug_summary", False))
 
     # MCP 运行级选择：--mcp-config 覆盖 loader 的默认路径，--mcp-server /
     # --mcp-exclude 写入选集环境变量（loader 在 runner 构造时读取）。
@@ -236,6 +277,12 @@ def parse_arguments() -> argparse.Namespace:
         parser.error(
             "Cannot specify both --instruction and --instruction-file. Use one or the other."
         )
+    if getattr(args, "seed", None) and getattr(args, "no_seed", False):
+        parser.error("Cannot specify both --seed and --no-seed.")
+    if getattr(args, "seed", None):
+        seed_path = Path(args.seed).expanduser()
+        if not seed_path.exists():
+            parser.error(f"--seed path not found: {args.seed}")
     if args.instruction_file:
         instruction_path = Path(args.instruction_file)
         try:

@@ -427,6 +427,41 @@ async def _run_agent_loop(
             )
 
 
+def _active_subagent_count(coordinator: AgentCoordinator) -> int:
+    """在飞子 agent 数（含子/孙；root 不计；已终结的释放配额）。"""
+    from Ben.core.agents import ACTIVE_STATUSES
+
+    return sum(
+        1
+        for aid, parent in coordinator.parent_of.items()
+        if parent is not None and coordinator.statuses.get(aid) in ACTIVE_STATUSES
+    )
+
+
+def _resolve_child_minutes(minutes: float | None) -> float | None:
+    """解析 per-task 时限（分钟）。
+
+    ``create_agent(minutes=...)`` 优先；否则读 ``BEN_SUBAGENT_MINUTES``（默认 45）；
+    设空字符串关闭 wall-clock 上限（仍受 MAX_AGENT_TURNS 约束）。
+    """
+    if minutes is not None:
+        if minutes <= 0:
+            raise RuntimeError("create_agent minutes must be > 0 when set")
+        return float(minutes)
+    raw = os.environ.get("BEN_SUBAGENT_MINUTES", "45").strip()
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"BEN_SUBAGENT_MINUTES must be a number, got {raw!r}"
+        ) from exc
+    if value <= 0:
+        raise RuntimeError(f"BEN_SUBAGENT_MINUTES must be > 0, got {value}")
+    return value
+
+
 async def spawn_child_agent(
     *,
     coordinator: AgentCoordinator,
@@ -441,6 +476,7 @@ async def spawn_child_agent(
     task: str,
     skills: list[str],
     parent_history: list[Any],
+    minutes: float | None = None,
     event_sink: StreamEventSink | None = None,
     hooks: RunHooks[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
@@ -448,10 +484,10 @@ async def spawn_child_agent(
     if not isinstance(parent_id, str):
         raise TypeError("Parent agent_id missing from context")
 
-    # Ben 可选硬闸门：BEN_MAX_SUBAGENTS=N 限制整次扫描创建的子 agent 总数
-    # （含子 agent 再派生的孙 agent；根 agent 不计）。达到上限时拒绝派生，
-    # create_agent 工具会把错误回给模型，由模型自行收敛。
-    _max_subagents = os.environ.get("BEN_MAX_SUBAGENTS", "").strip()
+    # Ben 硬闸门：BEN_MAX_SUBAGENTS=N 限制**同时在飞**的子 agent 数
+    # （含子/孙；root 不计；completed/stopped/crashed/failed 释放配额）。
+    # 默认 4；设空字符串关闭上限。达到上限时拒绝派生，create_agent 把错误回给模型。
+    _max_subagents = os.environ.get("BEN_MAX_SUBAGENTS", "4").strip()
     if _max_subagents:
         try:
             _limit = int(_max_subagents)
@@ -459,15 +495,16 @@ async def spawn_child_agent(
             raise RuntimeError(
                 f"BEN_MAX_SUBAGENTS must be an integer, got {_max_subagents!r}"
             ) from None
-        _current = sum(
-            1 for _parent in coordinator.parent_of.values() if _parent is not None
-        )
+        _current = _active_subagent_count(coordinator)
         if _current >= _limit:
             raise RuntimeError(
-                f"BEN_MAX_SUBAGENTS={_limit} reached; refusing to spawn '{name}' "
-                f"({_current} sub-agent(s) already created). Finish with what you have."
+                f"BEN_MAX_SUBAGENTS={_limit} in-flight limit reached; no new agent "
+                f"will be created (refusing '{name}'; {_current} active sub-agent(s)). "
+                "Wait for an agent to finish, stop a stuck one via stop_agent, or "
+                "reuse an existing agent via send_message_to_agent."
             )
 
+    child_minutes = _resolve_child_minutes(minutes)
     child_id = uuid.uuid4().hex[:8]
     child_agent = factory(name=name, skills=skills)
     await coordinator.register(
@@ -499,16 +536,21 @@ async def spawn_child_agent(
             task=task,
             parent_history=parent_history,
         ),
+        minutes=child_minutes,
         event_sink=event_sink,
         hooks=hooks,
     )
 
+    message = f"Spawned '{name}' ({child_id}) running in parallel."
+    if child_minutes is not None:
+        message += f" Time box: {child_minutes:g} minute(s)."
     return {
         "success": True,
         "agent_id": child_id,
         "name": name,
         "parent_id": parent_id,
-        "message": f"Spawned '{name}' ({child_id}) running in parallel.",
+        "minutes": child_minutes,
+        "message": message,
     }
 
 
@@ -1233,6 +1275,61 @@ async def _notify_parent_on_exit(
     await notify_parent_on_terminal(coordinator, agent_id, status)
 
 
+_TIMEBOX_NOTICE = (
+    "[Agent time box] {name} ({agent_id}) hit its {minutes:g}-minute wall-clock "
+    "limit and was stopped gracefully. It will not send a completion report — "
+    "stop waiting on this child, harvest any findings already filed, and either "
+    "spawn a fresh specialist with a tighter task or park this branch."
+)
+
+
+async def _enforce_child_timebox(
+    coordinator: AgentCoordinator,
+    child_id: str,
+    *,
+    name: str,
+    minutes: float,
+) -> None:
+    """到期后 graceful stop（复用 request_stop 的 after_turn cancel），并通知父 agent。"""
+    try:
+        await asyncio.sleep(minutes * 60.0)
+    except asyncio.CancelledError:
+        return
+    status = await _agent_status(coordinator, child_id)
+    from Ben.core.agents import ACTIVE_STATUSES, TERMINAL_STATUSES
+
+    if status is None or status in TERMINAL_STATUSES:
+        return
+    if status not in ACTIVE_STATUSES:
+        return
+    logger.info(
+        "child %s (%s) hit %.3g-minute time box; requesting graceful stop",
+        child_id,
+        name,
+        minutes,
+    )
+    # 子树一并收掉，避免孙 agent 在父已止损后继续烧额度。
+    await coordinator.cancel_descendants_graceful(child_id)
+    async with coordinator._lock:
+        parent = coordinator.parent_of.get(child_id)
+    if parent is None:
+        return
+    if not await coordinator.claim_parent_notice(child_id):
+        return
+    await coordinator.send(
+        parent,
+        {
+            "from": child_id,
+            "type": "stopped",
+            "priority": "high",
+            "content": _TIMEBOX_NOTICE.format(
+                name=name, agent_id=child_id, minutes=minutes
+            ),
+        },
+        interrupt=False,
+    )
+
+
 async def _start_child_runner(
     *,
     parent_ctx: dict[str, Any],
@@ -1250,6 +1347,7 @@ async def _start_child_runner(
     skills: list[str],
     initial_input: Any,
     start_parked: bool = False,
+    minutes: float | None = None,
     event_sink: StreamEventSink | None = None,
     hooks: RunHooks[dict[str, Any]] | None = None,
 ) -> None:
@@ -1264,6 +1362,21 @@ async def _start_child_runner(
     child_ctx[TURN_LIMIT_KEY] = skill_turn_limit(
         skills, parent_ctx.get(SUBAGENT_TURN_LIMITS_KEY) or {}
     )
+    # 子 agent 的 system prompt 内联集与父不同；按 child 参数重算，供 load_skill 去重。
+    from Ben.agents.prompt import resolve_inlined_skills
+
+    child_ctx["inlined_skills"] = set(
+        resolve_inlined_skills(
+            skills,
+            scan_mode=str(parent_ctx.get("scan_mode") or "blackbox"),
+            is_root=False,
+            is_whitebox=bool(parent_ctx.get("is_whitebox", False)),
+            is_diff_scoped=bool(parent_ctx.get("is_diff_scoped", False)),
+            report_tool=True,
+            coverage_tools=bool(parent_ctx.get("coverage_tools", True)),
+        )
+    )
+    child_ctx["_loaded_skills"] = set()
 
     async def _child_loop() -> None:
         # A budget stop is a clean scan-wide shutdown, not a child failure: the
@@ -1271,6 +1384,14 @@ async def _start_child_runner(
         # ``_run_cycle``. Swallow it here so the detached task does not surface a
         # spurious "Task exception was never retrieved" warning. The root agent
         # hits the same limit on its next call and tears the scan down.
+        timer: asyncio.Task[None] | None = None
+        if minutes is not None:
+            timer = asyncio.create_task(
+                _enforce_child_timebox(
+                    coordinator, child_id, name=name, minutes=minutes
+                ),
+                name=f"timebox-{name}-{child_id}",
+            )
         try:
             await run_agent_loop(
                 agent=child_agent,
@@ -1291,6 +1412,10 @@ async def _start_child_runner(
         except SubagentBudgetReservedError:
             logger.info("child %s stopped at the sub-agent budget reserve", child_id)
         finally:
+            if timer is not None and not timer.done():
+                timer.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await timer
             if not coordinator.is_shutting_down:
                 await _notify_parent_on_exit(coordinator, child_id)
 

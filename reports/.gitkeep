@@ -1,2 +1,0 @@
-# 占位文件：保证 reports 目录进入版本库。
-# 实际的 report_*.md 与 trace_*.json 由运行任务生成，并被 .gitignore 忽略。

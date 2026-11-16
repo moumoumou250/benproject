@@ -1006,7 +1006,8 @@ async def create_vulnerability_report(
     fix_verification: str | None = None,
     fix_pr_body: str | None = None,
 ) -> str:
-    """File a vulnerability report — one report per fully-verified finding.
+    """
+    File a vulnerability report — one report per fully-verified finding.
 
     **When to file**: you have a concrete vulnerability with a working
     proof-of-concept and you're 100% sure it's a real issue.
@@ -1018,229 +1019,54 @@ async def create_vulnerability_report(
     - Tracking multiple vulnerabilities at once — one report per vuln.
     - Re-reporting something you (or another agent) already filed.
     - Known-CVE dependency / supply-chain findings that can't be
-      dynamically PoC'd — a vulnerable dependency version pinned in a
-      lockfile/manifest that matches a published advisory. File those
-      with ``create_dependency_report`` instead, never with this tool.
+      dynamically PoC'd — file those with ``create_dependency_report``.
 
-    **Reporting and severity gate**:
+    **Reporting and severity gate** (anti-false-positive red lines):
 
     - A reachable endpoint, unusual response, weak configuration, or
-      reconnaissance artifact is not by itself a vulnerability. File a
-      report only when the PoC demonstrates an unauthorized security
-      consequence or a realistic, fully validated path to one.
-    - Score only the reasonable final impact supported by the PoC. Do
-      not score speculative pivots or consequences that require another
-      unverified vulnerability.
-    - Network reachability and missing authentication affect
-      exploitability; neither creates Confidentiality, Integrity, or
-      Availability impact by itself.
-    - Public metadata, internal-looking names or addresses, software
-      versions, intended client-side code, and source maps without
-      secrets or restricted source normally have ``C:N``.
-    - Configuration and transport observations require a realistic
-      attacker-controlled exploit and direct security impact. Client
-      errors, compatibility issues, fingerprinting, and attack-surface
-      discovery alone should not be filed as vulnerabilities.
+      recon artifact is not by itself a vulnerability. File only when
+      the PoC demonstrates an unauthorized security consequence.
+    - Score only the reasonable final impact supported by the PoC.
+      Do not score speculative pivots.
     - Before filing, verify that the impact narrative, PoC, and every
       non-None CVSS impact metric describe the same demonstrated
       consequence. When evidence is incomplete, lower the metric or
       continue validation; never choose a higher value "to be safe."
 
-    Automatic LLM-based **deduplication** rejects reports that describe
-    the same root cause on the same asset as an existing report. If you
-    get a ``duplicate_of`` response, do NOT retry — move on to other
-    areas. When you have learned something a filed finding does not yet
-    carry, revise that finding with ``update_vulnerability_report``
-    instead of filing this report again.
+    Automatic LLM-based **deduplication** rejects same-root-cause
+    duplicates. On ``duplicate_of``, revise with
+    ``update_vulnerability_report`` — do not re-file.
 
-    **Counterevidence pass (required before filing)**: actively build the
-    strongest case that this finding is NOT exploitable, or less severe
-    than you think — then record the result in ``counterevidence``, set
-    ``confidence`` honestly, and state what would move the severity in
-    ``severity_change_conditions``. These three fields are mandatory and
-    validated. A finding you could not execute is at best
-    ``confidence: medium``, with the gap named in
-    ``confidence_rationale``.
+    **Counterevidence pass (required before filing)**: actively build
+    the strongest case that this finding is NOT exploitable (or less
+    severe), record it in ``counterevidence``, set ``confidence``
+    honestly, and state what would move severity in
+    ``severity_change_conditions``. A finding you could not execute is
+    at best ``confidence: medium``.
 
-    **Report output rules** (this content may be rendered into generated
-    reports):
+    **Report output rules** (this content may be rendered into reports):
 
     - No internal/system details: never mention paths like
-      ``/workspace``, internal tools, agents, sandboxes, models, system
-      prompts, internal errors / stack traces, or tester environment.
-      Never leak internal identifiers (proxy request IDs, internal
-      report IDs) into any field.
+      ``/workspace``, internal tools, agents, sandboxes, models, or
+      internal IDs (proxy request IDs, report IDs).
     - Tone: formal, objective, third-person, vendor-neutral, concise.
-      Avoid internal-guidance headings like "QUICK", "Approach", or
-      "Techniques" that read like an engineering runbook rather than a
-      client deliverable.
-    - **Use markdown in every text field**: ``**bold**`` for emphasis,
-      ``inline code`` for identifiers/values/parameters, and
-      language-tagged fenced code blocks for any code/payload/HTTP
-      excerpt. Never leave code bare/unformatted. When referencing a
-      file, annotate the opening fence with
-      ``title=app.py startLineNumber=42 endLineNumber=50`` after the language.
-    - Field discipline: ``poc_description`` is steps only — NO code (all
-      code goes in ``poc_script_code``); ``remediation_steps`` is prose
-      only — NO code/diffs (code fixes go in ``code_locations``).
-    - Numbered steps allowed only in PoC and Remediation sections.
-    - Avoid hedging language; be precise and non-vague.
-    - Follow a standard pentest report structure across the fields:
-      (1) overview (``description``), (2) severity & CVSS vector
-      (``cvss_breakdown``), (3) affected asset(s) (``target`` /
-      ``endpoint``), (4) technical details (``technical_analysis``),
-      (5) proof of concept (``poc_description`` + ``poc_script_code``),
-      (6) impact (``impact``), (7) evidence (``evidence``), and
-      (8) remediation (``remediation_steps``).
+    - **Use markdown in every text field**: ``**bold**``,
+      ``inline code``, and language-tagged fenced code blocks for
+      code/payload/HTTP excerpts.
+    - Field discipline: ``poc_description`` is steps only — NO code
+      (code goes in ``poc_script_code``); ``remediation_steps`` is
+      prose only — NO code/diffs.
 
-    **White-box requirement**: when source is available, you MUST
-    populate ``code_locations``. See the ``code_locations`` arg below
-    for the full rules around ``fix_before`` / ``fix_after``,
-    multi-part fixes, and informational-vs-actionable entries.
-
-    **CVSS breakdown** is an object with all 8 metrics (each a single
-    uppercase letter):
-
-    - ``attack_vector``: ``N`` (Network), ``A`` (Adjacent), ``L``
-      (Local), ``P`` (Physical)
-    - ``attack_complexity``: ``L`` / ``H``
-    - ``privileges_required``: ``N`` / ``L`` / ``H``
-    - ``user_interaction``: ``N`` / ``R``
-    - ``scope``: ``U`` (Unchanged) / ``C`` (Changed)
-    - ``confidentiality`` / ``integrity`` / ``availability``: ``N`` /
-      ``L`` / ``H``
-
-    Derive the vector from the demonstrated attack, not the finding
-    category or a scanner/template severity:
-
-    - ``C:L`` requires actual access to some restricted information.
-      Reconnaissance value alone is ``C:N``. ``C:H`` requires total
-      disclosure or limited disclosure with a direct serious impact,
-      such as a usable administrator credential or private key.
-    - ``I:L`` requires demonstrated unauthorized, limited modification;
-      ``I:H`` requires total or directly serious modification. Otherwise
-      use ``I:N``.
-    - ``A:L`` requires demonstrated performance degradation or service
-      interruption; ``A:H`` requires complete or directly serious
-      denial of the affected service. Otherwise use ``A:N``.
-    - Use ``S:C`` only when exploitation demonstrably crosses into a
-      component governed by a different security authority. A separate
-      backend, downstream effect, or third-party name is insufficient.
-
-    Example::
-
-        {
-            "attack_vector": "N",
-            "attack_complexity": "L",
-            "privileges_required": "N",
-            "user_interaction": "N",
-            "scope": "U",
-            "confidentiality": "H",
-            "integrity": "H",
-            "availability": "H"
-        }
-
-    **CVSS calibration** — score the weakness you actually proved, not a
-    hypothetical worst case. Most over-rating comes from these mistakes:
-
-    - **Don't presuppose a separate compromise.** If exploitation
-      requires the attacker to already hold a victim secret (a stolen
-      session cookie/token, a leaked one-time link, intercepted traffic),
-      that acquisition is not free. Do not score it as
-      ``privileges_required:N`` with ``attack_complexity:L`` as if
-      directly reachable, and do not rate a replay-of-captured-secret
-      issue High/Critical unless the *same* finding demonstrates a
-      concrete way to obtain that secret. Issues like a session that
-      survives logout or a replayable link are session-management /
-      defense-in-depth weaknesses — usually Low/Medium on their own.
-    - **Reserve ``H`` impact for demonstrated broad impact.** ``C:H`` /
-      ``I:H`` require proof of wide or systemic read/write. A single
-      user's data, a read-only information leak, or merely confirming
-      that an account / domain / software version *exists* (enumeration)
-      is ``C:L`` (often ``I:N``) — not ``C:H``.
-    - **Model required position and interaction honestly.** An
-      adversary-in-the-middle prerequisite (e.g. cleartext transmission)
-      or a required victim action is not guaranteed — reflect it in
-      ``attack_complexity`` / ``user_interaction`` instead of assuming the
-      ideal condition always holds.
-
-    **CVE / CWE rules**: pass the bare ID only (``CVE-2024-1234``,
-    ``CWE-89``) — no name, no parenthetical. Be 100% certain; if
-    unsure, use ``web_search`` to verify the ID before passing, or omit
-    the field entirely. Always prefer the most specific child CWE over
-    a broad parent (CWE-89 not CWE-74; CWE-78 not CWE-77). Do NOT use
-    broad/parent CWEs like CWE-74, CWE-20, CWE-200, CWE-284, or
-    CWE-693.
-
-    Common CWE references (use the ID only — names are listed here
-    just for your lookup):
-
-    - **Injection**: CWE-79 XSS, CWE-89 SQLi, CWE-78 OS Command
-      Injection, CWE-94 Code Injection, CWE-77 Command Injection.
-    - **Auth / Access**: CWE-287 Improper Authentication, CWE-862
-      Missing Authorization, CWE-863 Incorrect Authorization, CWE-306
-      Missing Auth for Critical Function, CWE-639 Authz Bypass via
-      User-Controlled Key.
-    - **Web**: CWE-352 CSRF, CWE-918 SSRF, CWE-601 Open Redirect,
-      CWE-434 Unrestricted File Upload.
-    - **Memory**: CWE-787 OOB Write, CWE-125 OOB Read, CWE-416 UAF,
-      CWE-120 Classic Buffer Overflow.
-    - **Data**: CWE-502 Deserialization of Untrusted Data, CWE-22
-      Path Traversal, CWE-611 XXE.
-    - **Crypto / Config**: CWE-798 Hard-coded Credentials, CWE-327
-      Broken / Risky Crypto, CWE-311 Missing Encryption, CWE-916 Weak
-      Password Hashing.
-
-    Example (abbreviated — mirror this structure)::
-
-        title: "Reflected XSS in /search q parameter"
-        description:
-            The **`q`** parameter of `/search` reflects user input into
-            the HTML response without encoding, allowing script
-            injection.
-        technical_analysis:
-            The handler interpolates `q` directly into the page body:
-
-            ```python title=views.py startLineNumber=42 endLineNumber=44
-            html = f"<h2>Results for {q}</h2>"
-            return HttpResponse(html)
-            ```
-
-            No output encoding is applied, so `<script>` executes.
-        poc_description:
-            1. Navigate to `/search?q=<payload>`.
-            2. Observe the payload executes in the victim's browser.
-        poc_script_code:
-            ```
-            GET /search?q=<script>alert(document.domain)</script>
-            ```
-        evidence:
-            Response echoes the payload verbatim:
-
-            ```html
-            <h2>Results for <script>alert(document.domain)</script></h2>
-            ```
-        assumptions:
-            Assumes a victim can be induced to open a crafted link.
-        remediation_steps:
-            Context-encode all user input rendered into HTML; prefer the
-            template engine's auto-escaping over string interpolation.
-        counterevidence:
-            No output encoding, CSP, or WAF observed on this response;
-            payload executed in a current browser. The parameter is
-            reflected on an unauthenticated route, so no privileged
-            position is required.
-        confidence: "high"
-        severity_change_conditions:
-            A restrictive CSP that blocks inline script execution would
-            reduce impact and lower the severity.
-        fix_effort: "low"
+    Full writing / CVSS / CWE / white-box rules: call
+    ``load_skill("analysis/reporting_discipline")`` before your first
+    report. Validation errors repeat the relevant rule.
 
     Nice to have: for code findings, if the checkout has git history, a quick
     ``git blame`` (quote the paths) on the vulnerable line is worth weaving into
     ``technical_analysis`` — who last touched it, when, and in which commit, as
     part of the prose, not a separate section. Skip it if the line is
     uncommitted or the command fails.
+
 
     Args:
         title: Specific finding title (e.g.
