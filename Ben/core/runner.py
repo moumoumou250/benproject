@@ -660,6 +660,44 @@ class AgentRunner:
         supports_images = model_supports_images(resolved_model)
         if not supports_images:
             logger.info("模型 %s 不支持图片输入，跳过图片工具", resolved_model)
+
+        # === 模型分层：root 走旗舰档（LLM_MODEL），子 agent 默认走 flash 档 ===
+        # （借鉴 sapper 的经济制度：旗舰脑做决策，轻量脑做量产——子 agent 承担
+        # 绝大多数工具调用轮次）。未配置 BEN_FLASH_MODEL 时全部 agent 同档。
+        # 子 agent 的 strict-schema / 图片能力按 flash 模型单独判定，不沿用
+        # 旗舰档的结论——两个档位可能来自不同厂商，能力不一定相同。
+        from Ben.config.models import build_flash_model
+
+        flash_model_name = settings.llm.flash_model
+        flash_model = build_flash_model(settings)
+        child_strict_tool_schemas = strict_tool_schemas
+        child_supports_images = supports_images
+        if flash_model is not None:
+            logger.info(
+                "模型分层：root=%s（旗舰档），子 agent=%s（flash 档）",
+                resolved_model,
+                flash_model_name,
+            )
+            child_strict_tool_schemas = supports_strict_tool_schemas(flash_model_name or "")
+            child_supports_images = model_supports_images(flash_model_name or "")
+            if not child_supports_images:
+                logger.info(
+                    "flash 模型 %s 不支持图片输入，子 agent 跳过图片工具",
+                    flash_model_name,
+                )
+            # flash 档也做一次启动预检：错误的 key / base / model 在创建
+            # 容器之前就暴露，而不是等第一个子 agent 起来才炸。
+            from Ben.interface.cli.scan_setup import preflight_model_connection
+
+            logger.info("LLM 自检（flash 档）：%s", flash_model_name)
+            await preflight_model_connection(
+                flash_model_name or "",
+                settings=settings,
+                reuse=True,
+                api_key=settings.llm.flash_api_key or None,
+                api_base=settings.llm.flash_api_base or None,
+            )
+
         logger.info(
             "SDK 配置完成：model=%s, api_route=%s",
             resolved_model,
@@ -947,11 +985,15 @@ class AgentRunner:
                     is_whitebox=is_whitebox,
                     is_diff_scoped=is_diff_scoped,
                     interactive=self.interactive,
-                    strict_tool_schemas=strict_tool_schemas,
+                    strict_tool_schemas=child_strict_tool_schemas,
                     system_prompt_context=prompt_context,
-                    supports_images=supports_images,
+                    supports_images=child_supports_images,
                     coverage_tools=True,
                     prompts_dir=settings.prompts_dir,
+                    # 模型分层：子 agent 的 flash 档模型（未配置时 None =
+                    # 沿用 run 级旗舰模型）。resume 拉起的子 agent 走同一
+                    # 闭包，档位自动一致。
+                    model_name=flash_model,
                 )
 
                 async def spawn_child_agent(**kwargs):  # noqa: ANN202, ANN003

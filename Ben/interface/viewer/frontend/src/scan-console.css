@@ -1,1 +1,32 @@
 .scan-console{min-height:100vh;background:#0c111b;color:#e6edf5;font-family:Inter,"Microsoft YaHei",sans-serif}.scan-console header{height:82px;border-bottom:1px solid #243044;display:flex;align-items:center;justify-content:space-between;padding:0 max(5vw,24px)}.brand{font-size:28px;font-weight:850;letter-spacing:-1px;color:#79e5c2;text-decoration:none}.brand span{color:#f2f5fa}.brand small{font-size:9px;letter-spacing:2px;color:#8294aa;margin-left:20px;font-weight:500}.local-badge{font-size:12px;color:#79e5c2;background:#132c2b;padding:7px 12px;border-radius:20px}.scan-console main{max-width:1320px;margin:auto;padding:48px 28px}.eyebrow{color:#79e5c2;letter-spacing:3px;font-size:11px}.console-title h1{font-size:36px;font-weight:650;letter-spacing:-1px;margin:12px 0}.console-title p{color:#93a5bb;font-size:14px;margin-bottom:32px}.console-grid{display:grid;grid-template-columns:1fr 1fr;gap:24px}.console-card{background:#131c2a;border:1px solid #283447;border-radius:16px;padding:26px}.console-card h2{font-size:16px;display:flex;align-items:center;gap:12px;margin:0 0 24px;font-weight:600}.console-card h2>span{font-size:11px;color:#7890ac;border:1px solid #34445b;border-radius:6px;padding:4px 6px}.console-card label{display:block;font-size:13px;color:#c5d2e2;margin-bottom:20px}.console-card input:not([type=checkbox]),.console-card select,.console-card textarea{display:block;width:100%;box-sizing:border-box;background:#0c1420;border:1px solid #334259;border-radius:8px;padding:12px;color:#e6edf5;margin-top:9px;font:inherit}.console-card input:focus,.console-card textarea:focus,.console-card select:focus{outline:2px solid #79e5c2;outline-offset:2px}.console-card textarea{resize:vertical}.field-row{display:grid;grid-template-columns:1.1fr 1fr 1fr;gap:12px}.optional{color:#7489a3;font-size:11px}.console-card .authorization{display:flex;align-items:center;gap:9px;font-size:12px;line-height:1.6}.authorization input{accent-color:#79e5c2}.start-scan{width:100%;padding:14px;background:#79e5c2;color:#102720;border:0;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer}.start-scan:disabled{opacity:.4;cursor:default}.field-note{font-size:11px;color:#7d91ab;line-height:1.8;margin-top:12px}.status-live,.status-idle{margin-left:auto;font-size:11px;font-weight:500;border-radius:20px;padding:5px 9px;background:#253247;color:#a8bad2}.status-live{color:#79e5c2;background:#193b36}.runtime-target{color:#9fb0c7;font-size:12px;overflow-wrap:anywhere}.scan-log{height:350px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;background:#090f18;color:#a9bfd3;border-radius:8px;padding:16px;font-size:11px;line-height:1.8;margin:18px 0}.report-link{display:inline-block;color:#79e5c2;font-size:13px;padding:10px 0}.history-card{margin-top:24px}.history-card h2 small{margin-left:auto;font-size:11px;color:#8295ad}.run-list{max-height:380px;overflow:auto}.run-list a{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:15px 4px;border-top:1px solid #263247;color:#cbd7e8;text-decoration:none;font-size:12px}.run-list a:hover{color:#79e5c2}.run-list strong{font-weight:500;overflow-wrap:anywhere}.run-list small{display:block;color:#758ba6;margin-top:5px}.console-error{background:#3a2229;border:1px solid #73414c;color:#ffc0c9;padding:12px;border-radius:8px;margin-bottom:20px;font-size:13px}.scan-console footer{padding:22px;text-align:center;color:#61758f;font-size:11px}.console-back{position:fixed;bottom:18px;right:22px;z-index:100;background:#79e5c2;color:#102720;padding:10px 16px;border-radius:8px;font-size:12px}@media(max-width:850px){.console-grid{grid-template-columns:1fr}.brand small{display:none}.console-title h1{font-size:28px}.scan-console main{padding:32px 16px}.console-card{padding:20px}.field-row{grid-template-columns:1fr}.scan-log{height:280px}}
+
+/* ---- Key 池面板 ---- */
+.keypool-page{display:flex;flex-direction:column;gap:24px}
+.kp-nodes{display:grid;grid-template-columns:1fr 1fr;gap:24px}
+.kp-node-row{display:flex;justify-content:space-between;gap:10px;font-size:13px;padding:9px 0;border-top:1px solid #263247;color:#93a5bb}
+.kp-node-row:first-of-type{border-top:0}
+.kp-node-row strong{color:#e6edf5;font-weight:500;overflow-wrap:anywhere;text-align:right}
+.kp-mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+.kp-source{font-size:11px;border-radius:20px;padding:4px 9px;background:#253247;color:#a8bad2;white-space:nowrap;margin-left:auto}
+.kp-source.is-pool{color:#79e5c2;background:#193b36}
+.kp-refresh{margin-left:auto;background:#1b2740;border:1px solid #34445b;color:#cbd7e8;border-radius:7px;padding:5px 9px;cursor:pointer;display:flex;align-items:center}
+.kp-refresh:hover:not(:disabled){border-color:#79e5c2;color:#79e5c2}
+.kp-refresh:disabled{opacity:.45;cursor:default}
+.kp-entry{display:flex;align-items:center;gap:12px;padding:13px 4px;border-top:1px solid #263247;font-size:12px;color:#cbd7e8}
+.kp-entry:first-of-type{border-top:0}
+.kp-status{width:9px;height:9px;border-radius:50%;flex:none;display:inline-block;background:#3a4a63}
+.kp-status.ok{background:#3fd68f}
+.kp-status.fail{background:#e5484d}
+.kp-tier-badge{font-size:11px;border-radius:6px;padding:3px 8px;background:#22304a;color:#9db4d6;white-space:nowrap}
+.kp-tier-badge.root{color:#79e5c2;background:#193b36}
+.kp-entry-main{min-width:0;display:flex;flex-direction:column;gap:3px}
+.kp-entry-main strong{color:#e6edf5;font-weight:500;overflow-wrap:anywhere}
+.kp-entry-main small{color:#758ba6;overflow-wrap:anywhere}
+.kp-detail{color:#e58a90;font-size:11px;overflow-wrap:anywhere}
+.kp-active-chip{font-size:11px;color:#79e5c2;background:#193b36;border-radius:20px;padding:3px 9px;white-space:nowrap;flex:none}
+.kp-actions{margin-left:auto;display:flex;gap:8px;flex:none}
+.kp-actions button{background:#1b2740;border:1px solid #34445b;color:#cbd7e8;border-radius:7px;padding:6px 12px;font-size:12px;cursor:pointer;display:flex;align-items:center;gap:5px}
+.kp-actions button:hover:not(:disabled){border-color:#79e5c2;color:#79e5c2}
+.kp-actions button:disabled{opacity:.45;cursor:default}
+.kp-actions button.danger:hover:not(:disabled){border-color:#e5484d;color:#e5484d}
+@media(max-width:850px){.kp-nodes{grid-template-columns:1fr}}

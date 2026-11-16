@@ -176,8 +176,24 @@ def parse_arguments() -> argparse.Namespace:
         help="跳过指定名称的 MCP 连接（可重复）。",
     )
     parser.add_argument("--selftest-docker", action="store_true", help="仅验证 Docker 执行器")
-    parser.add_argument("--selftest-llm", action="store_true", help="仅验证 DeepSeek 文本调用")
+    parser.add_argument(
+        "--selftest-llm",
+        action="store_true",
+        help="验证模型节点连通：总节点 LLM_MODEL + 子节点 BEN_FLASH_MODEL（未配置则跳过）",
+    )
     parser.add_argument("--selftest-tools", action="store_true", help="仅验证工具层真实执行")
+    parser.add_argument(
+        "--skip-preflight",
+        action="store_true",
+        help="跳过开跑前的目标可达性预检（默认会先探测，不可达就拒绝启动）",
+    )
+    parser.add_argument(
+        "--preflight-timeout",
+        type=float,
+        default=5.0,
+        metavar="SECONDS",
+        help="预检单次探测超时（默认 5 秒）",
+    )
     parser.add_argument("--keep-container", action="store_true", help="任务结束保留执行容器")
     parser.add_argument("-v", "--verbose", action="store_true", help="输出 DEBUG 日志")
 
@@ -195,6 +211,8 @@ def parse_arguments() -> argparse.Namespace:
         parser.error("--max-turns must be a positive integer")
     if args.max_budget_usd is not None and args.max_budget_usd <= 0:
         parser.error("--max-budget must be greater than 0")
+    if getattr(args, "preflight_timeout", 5.0) <= 0:
+        parser.error("--preflight-timeout must be greater than 0")
 
     # --fail-on 只在 headless 有意义：没有终端时 main() 本来就走 headless，
     # 只有 TUI 真要打开时该参数才是错配（对齐 strix）。

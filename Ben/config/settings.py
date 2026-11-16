@@ -178,6 +178,28 @@ class LlmSettings(_BenSettings):
             "DEEPSEEK_BASE_URL",
         ),
     )
+    # ===== 模型分层（可选，借鉴 sapper 的"旗舰脑做决策、轻量脑做量产"）=====
+    # root agent 用上面的 model（旗舰档）；create_agent 派生的子 agent 默认用
+    # flash_model（轻量档）。未配置 flash_model 时所有 agent 共用 model。
+    # 接入方式与主模型一致：
+    #   1. 带厂商前缀（推荐）：``deepseek/deepseek-chat`` 走 LiteLLM 目录路由，
+    #      key 用厂商专属环境变量（如 DEEPSEEK_API_KEY）；flash_api_key/
+    #      flash_api_base 配置了则以它们覆盖（指向自定义网关）；
+    #   2. 裸模型名：需同时配 flash_api_key + flash_api_base 指向该模型的
+    #      OpenAI 兼容端点。
+    flash_model: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("BEN_FLASH_MODEL", "LLM_FLASH_MODEL"),
+    )
+    flash_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("BEN_FLASH_API_KEY", "LLM_FLASH_API_KEY"),
+        repr=False,
+    )
+    flash_api_base: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("BEN_FLASH_API_BASE", "LLM_FLASH_API_BASE"),
+    )
     extra_headers: dict[str, str] | None = Field(
         default=None, alias="LLM_EXTRA_HEADERS", repr=False
     )

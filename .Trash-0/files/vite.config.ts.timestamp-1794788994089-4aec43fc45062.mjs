@@ -1,0 +1,34 @@
+// vite.config.ts
+import { defineConfig } from "file:///home/kali/Desktop/AI/BenProject/Ben/interface/viewer/frontend/node_modules/vite/dist/node/index.js";
+import react from "file:///home/kali/Desktop/AI/BenProject/Ben/interface/viewer/frontend/node_modules/@vitejs/plugin-react/dist/index.js";
+import tailwindcss from "file:///home/kali/Desktop/AI/BenProject/Ben/interface/viewer/frontend/node_modules/@tailwindcss/vite/dist/index.mjs";
+import { fileURLToPath, URL } from "node:url";
+var __vite_injected_original_import_meta_url = "file:///home/kali/Desktop/AI/BenProject/Ben/interface/viewer/frontend/vite.config.ts";
+var vite_config_default = defineConfig({
+  base: "./",
+  plugins: [react(), tailwindcss()],
+  resolve: {
+    alias: {
+      "@": fileURLToPath(new URL("./src", __vite_injected_original_import_meta_url))
+    }
+  },
+  build: {
+    outDir: "../static",
+    emptyOutDir: true
+  },
+  // Dev server only. The Python console serves /api and the built files on
+  // the same origin; Vite does not, so an unproxied /api/* falls through to
+  // index.html and response.json() throws
+  // "Unexpected token '<' ... is not valid JSON".
+  server: {
+    proxy: {
+      "/api": {
+        target: process.env.BEN_VIEWER_ORIGIN ?? "http://127.0.0.1:8765"
+      }
+    }
+  }
+});
+export {
+  vite_config_default as default
+};
+//# sourceMappingURL=data:application/json;base64,ewogICJ2ZXJzaW9uIjogMywKICAic291cmNlcyI6IFsidml0ZS5jb25maWcudHMiXSwKICAic291cmNlUm9vdCI6ICIvaG9tZS9rYWxpL0Rlc2t0b3AvQUkvQmVuUHJvamVjdC9CZW4vaW50ZXJmYWNlL3ZpZXdlci9mcm9udGVuZC8iLAogICJzb3VyY2VzQ29udGVudCI6IFsiY29uc3QgX192aXRlX2luamVjdGVkX29yaWdpbmFsX2Rpcm5hbWUgPSBcIi9ob21lL2thbGkvRGVza3RvcC9BSS9CZW5Qcm9qZWN0L0Jlbi9pbnRlcmZhY2Uvdmlld2VyL2Zyb250ZW5kXCI7Y29uc3QgX192aXRlX2luamVjdGVkX29yaWdpbmFsX2ZpbGVuYW1lID0gXCIvaG9tZS9rYWxpL0Rlc2t0b3AvQUkvQmVuUHJvamVjdC9CZW4vaW50ZXJmYWNlL3ZpZXdlci9mcm9udGVuZC92aXRlLmNvbmZpZy50c1wiO2NvbnN0IF9fdml0ZV9pbmplY3RlZF9vcmlnaW5hbF9pbXBvcnRfbWV0YV91cmwgPSBcImZpbGU6Ly8vaG9tZS9rYWxpL0Rlc2t0b3AvQUkvQmVuUHJvamVjdC9CZW4vaW50ZXJmYWNlL3ZpZXdlci9mcm9udGVuZC92aXRlLmNvbmZpZy50c1wiO2ltcG9ydCB7IGRlZmluZUNvbmZpZyB9IGZyb20gXCJ2aXRlXCI7XG5pbXBvcnQgcmVhY3QgZnJvbSBcIkB2aXRlanMvcGx1Z2luLXJlYWN0XCI7XG5pbXBvcnQgdGFpbHdpbmRjc3MgZnJvbSBcIkB0YWlsd2luZGNzcy92aXRlXCI7XG5pbXBvcnQgeyBmaWxlVVJMVG9QYXRoLCBVUkwgfSBmcm9tIFwibm9kZTp1cmxcIjtcblxuLy8gVGhlIHZpZXdlciBpcyBzZXJ2ZWQgYXMgc3RhdGljIGZpbGVzIGJ5IGEgc3RkbGliIFB5dGhvbiBzZXJ2ZXIgb24gYW5cbi8vIGFyYml0cmFyeSBlcGhlbWVyYWwgcG9ydCwgc28gYWxsIGFzc2V0IFVSTHMgbXVzdCBiZSByZWxhdGl2ZSAoYmFzZTogXCIuL1wiKS5cbi8vIFRoZSBidWlsZCBvdXRwdXQgaXMgY29tbWl0dGVkIGF0IHN0cml4L2ludGVyZmFjZS92aWV3ZXIvc3RhdGljIGFuZCBzaGlwcGVkLlxuZXhwb3J0IGRlZmF1bHQgZGVmaW5lQ29uZmlnKHtcbiAgYmFzZTogXCIuL1wiLFxuICBwbHVnaW5zOiBbcmVhY3QoKSwgdGFpbHdpbmRjc3MoKV0sXG4gIHJlc29sdmU6IHtcbiAgICBhbGlhczoge1xuICAgICAgXCJAXCI6IGZpbGVVUkxUb1BhdGgobmV3IFVSTChcIi4vc3JjXCIsIGltcG9ydC5tZXRhLnVybCkpLFxuICAgIH0sXG4gIH0sXG4gIGJ1aWxkOiB7XG4gICAgb3V0RGlyOiBcIi4uL3N0YXRpY1wiLFxuICAgIGVtcHR5T3V0RGlyOiB0cnVlLFxuICB9LFxuICAvLyBEZXYgc2VydmVyIG9ubHkuIFRoZSBQeXRob24gY29uc29sZSBzZXJ2ZXMgL2FwaSBhbmQgdGhlIGJ1aWx0IGZpbGVzIG9uXG4gIC8vIHRoZSBzYW1lIG9yaWdpbjsgVml0ZSBkb2VzIG5vdCwgc28gYW4gdW5wcm94aWVkIC9hcGkvKiBmYWxscyB0aHJvdWdoIHRvXG4gIC8vIGluZGV4Lmh0bWwgYW5kIHJlc3BvbnNlLmpzb24oKSB0aHJvd3NcbiAgLy8gXCJVbmV4cGVjdGVkIHRva2VuICc8JyAuLi4gaXMgbm90IHZhbGlkIEpTT05cIi5cbiAgc2VydmVyOiB7XG4gICAgcHJveHk6IHtcbiAgICAgIFwiL2FwaVwiOiB7XG4gICAgICAgIHRhcmdldDogcHJvY2Vzcy5lbnYuQkVOX1ZJRVdFUl9PUklHSU4gPz8gXCJodHRwOi8vMTI3LjAuMC4xOjg3NjVcIixcbiAgICAgIH0sXG4gICAgfSxcbiAgfSxcbn0pO1xuIl0sCiAgIm1hcHBpbmdzIjogIjtBQUE0VyxTQUFTLG9CQUFvQjtBQUN6WSxPQUFPLFdBQVc7QUFDbEIsT0FBTyxpQkFBaUI7QUFDeEIsU0FBUyxlQUFlLFdBQVc7QUFIaU0sSUFBTSwyQ0FBMkM7QUFRclIsSUFBTyxzQkFBUSxhQUFhO0FBQUEsRUFDMUIsTUFBTTtBQUFBLEVBQ04sU0FBUyxDQUFDLE1BQU0sR0FBRyxZQUFZLENBQUM7QUFBQSxFQUNoQyxTQUFTO0FBQUEsSUFDUCxPQUFPO0FBQUEsTUFDTCxLQUFLLGNBQWMsSUFBSSxJQUFJLFNBQVMsd0NBQWUsQ0FBQztBQUFBLElBQ3REO0FBQUEsRUFDRjtBQUFBLEVBQ0EsT0FBTztBQUFBLElBQ0wsUUFBUTtBQUFBLElBQ1IsYUFBYTtBQUFBLEVBQ2Y7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBLEVBS0EsUUFBUTtBQUFBLElBQ04sT0FBTztBQUFBLE1BQ0wsUUFBUTtBQUFBLFFBQ04sUUFBUSxRQUFRLElBQUkscUJBQXFCO0FBQUEsTUFDM0M7QUFBQSxJQUNGO0FBQUEsRUFDRjtBQUNGLENBQUM7IiwKICAibmFtZXMiOiBbXQp9Cg==

@@ -1,4 +1,11 @@
-import type { ScanRequest, ScanStatus, HistoryRun } from "./types";
+import type {
+  KeyPoolAction,
+  KeyPoolActionResult,
+  KeyPoolPayload,
+  ScanRequest,
+  ScanStatus,
+  HistoryRun,
+} from "./types";
 async function json<T>(
   url: string,
   signal?: AbortSignal,
@@ -22,6 +29,14 @@ export const getHistory = (signal: AbortSignal) =>
   json<{ runs: HistoryRun[] }>("/api/runs", signal);
 export const launchScan = (body: ScanRequest) =>
   json<ScanStatus>("/api/scans", undefined, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+export const getKeyPool = (signal?: AbortSignal) =>
+  json<KeyPoolPayload>("/api/keypool", signal);
+export const keyPoolAction = (body: KeyPoolAction) =>
+  json<KeyPoolActionResult>("/api/keypool", undefined, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),

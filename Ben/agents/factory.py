@@ -628,17 +628,30 @@ def _check_command_readonly(command: str) -> str | None:
 
 
 def _allowed_hostnames(allowed_targets: tuple[str, ...]) -> set[str]:
-    """白名单配置 -> 主机名集合（小写）。"""
+    """白名单配置 -> 主机名集合（小写）。
+
+    兼容两种写法：``http://host:port/path`` 与裸的 ``host`` / ``host:port``。
+    后者以前会被 urlsplit 当成 path 而丢掉，导致白名单里写了域名却一条命令
+    都放不出去（扫描全程"未授权目标"，看起来像模型不干活）。
+    """
     from urllib.parse import urlsplit
 
     hosts: set[str] = set()
     for target in allowed_targets:
+        raw = str(target or "").strip()
+        if not raw:
+            continue
+        candidate = raw if "://" in raw else f"//{raw}"
         try:
-            hostname = urlsplit(target).hostname
+            hostname = urlsplit(candidate).hostname
         except ValueError:
             continue
-        if hostname:
-            hosts.add(hostname.lower())
+        if not hostname:
+            continue
+        hostname = hostname.lower()
+        if not any(char.isalnum() for char in hostname):
+            continue  # "." / "-" 这类来自本地路径的残渣
+        hosts.add(hostname)
     return hosts
 
 
@@ -1154,6 +1167,7 @@ def build_agent(
     finish_tool: Tool = finish_scan,
     coverage_tools: bool = True,
     prompts_dir: Path | None = None,
+    model_name: Any = None,
 ) -> Agent[Any]:
     """Build a Ben Agent for either root or child use（对齐 strix build_strix_agent）。
 
@@ -1167,6 +1181,10 @@ def build_agent(
         finish_tool: root agent 结束运行的工具（默认 finish_scan）。
         coverage_tools: 是否挂载覆盖台账工具及其提示词规则。
         model=None: 模型解析推迟到 RunConfig。
+        model_name: 该 agent 的模型覆盖（模型分层）。None 表示沿用 run 级
+            RunConfig.model；传 ``厂商/模型`` 名或 BenProvider 解析出的 Model
+            实例（build_flash_model 的产物）时，SDK 用它替代 run 级模型——
+            这是 root 旗舰档 / 子 agent flash 档的实现机制。
     """
     if instructions_override is not None:
         instructions = instructions_override
@@ -1233,7 +1251,7 @@ def build_agent(
         instructions=instructions,
         tools=tools,
         tool_use_behavior=_finish_tool_use_behavior,
-        model=None,
+        model=model_name,
     )
 
 
@@ -1251,11 +1269,14 @@ def make_child_factory(
     supports_images: bool = False,
     coverage_tools: bool = True,
     prompts_dir: Path | None = None,
+    model_name: Any = None,
 ) -> Any:
     """Return the runner-owned builder used by ``spawn_child_agent``（对齐 strix）。
 
     运行级参数（``scan_mode``、``sandbox_session``、``allowed_targets`` 等）
     由闭包捕获，每个 child 继承扫描级配置，graph 工具无需感知 runner 内部。
+    ``model_name`` 即模型分层的子 agent 档位：runner 传入 build_flash_model
+    的产物（未配置 flash 档时为 None，子 agent 沿用 run 级旗舰模型）。
     """
 
     def _factory(*, name: str, skills: list[str]) -> Agent[Any]:
@@ -1275,6 +1296,7 @@ def make_child_factory(
             supports_images=supports_images,
             coverage_tools=coverage_tools,
             prompts_dir=prompts_dir,
+            model_name=model_name,
         )
 
     return _factory

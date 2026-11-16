@@ -326,6 +326,11 @@ class _TurnGuardModel(Model):
         self._first_event_timeout = first_event_timeout
         self._total_timeout = total_timeout
 
+    @property
+    def model(self) -> str | None:
+        """内层模型名（usage hooks 按 agent 实际模型记价时读取）。"""
+        return getattr(self._inner, "model", None)
+
     def _limiter(self) -> TurnToolCallLimiter:
         return TurnToolCallLimiter(self._max_tool_calls_per_turn)
 
@@ -757,6 +762,29 @@ def _routes_via_litellm(model: Model) -> bool:
     from agents.extensions.models.litellm_model import LitellmModel
 
     return isinstance(model, LitellmModel)
+
+
+def build_flash_model(settings: Settings | None = None) -> Model | None:
+    """解析子 agent 的 flash 档模型；未配置 ``BEN_FLASH_MODEL`` 时返回 None。
+
+    与判重模型（Ben/report/dedupe.py）同一构造路径：独立 BenProvider 实例 +
+    可选凭据覆盖，复用主链路的请求日志、流式守卫与 turn guard 包装。root
+    agent 不经过这里——它始终用 run 级 RunConfig.model（旗舰档）。
+
+    - ``厂商/模型`` 前缀名：走 LiteLLM 目录路由，厂商 key 读专属环境变量
+      （如 DEEPSEEK_API_KEY）；flash_api_key / flash_api_base 配置了则覆盖；
+    - 裸模型名：OpenAI 兼容端点，用 flash_api_key + flash_api_base 认证。
+    """
+    if settings is None:
+        settings = load_settings()
+    flash = settings.llm.flash_model
+    if not flash:
+        return None
+    provider = BenProvider(
+        api_key=settings.llm.flash_api_key or None,
+        base_url=settings.llm.flash_api_base or None,
+    )
+    return provider.get_model(flash)
 
 
 def _litellm_provider(model_name: str) -> str | None:

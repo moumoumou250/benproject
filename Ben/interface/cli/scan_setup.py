@@ -302,12 +302,21 @@ async def preflight_request(
 
 
 async def preflight_model_connection(
-    model: str, *, settings: Settings | None = None, reuse: bool = False
+    model: str,
+    *,
+    settings: Settings | None = None,
+    reuse: bool = False,
+    api_key: str | None = None,
+    api_base: str | None = None,
 ) -> None:
     """启动沙箱前先做一次最小往返，让错误的 key/base/model 立刻暴露。
 
     走 :class:`BenProvider` 与正式运行同一路由（含 ``厂商/模型`` 前缀、
     extra_headers/extra_body），因此能提前发现只在真实调用路径上出现的错误。
+
+    ``api_key``/``api_base``：模型分层（BEN_FLASH_MODEL）时 flash 档的凭据
+    覆盖——flash 模型的 key/base 可能与主模型不同，必须用同一套路由但换成
+    flash 档凭据构造 provider；主模型预检不传这两个参数，行为不变。
 
     端点若明确拒绝 OpenAI Responses（404/405，或正文写明不支持），不再使用
     OpenAI Responses 客户端：Grok 订阅改走同一代理的 chat completions；
@@ -328,7 +337,7 @@ async def preflight_model_connection(
     from Ben.config.models import BenProvider, configure_sdk_model_defaults
 
     configure_sdk_model_defaults(settings)
-    provider_model = BenProvider().get_model(model)
+    provider_model = BenProvider(api_key=api_key, base_url=api_base).get_model(model)
     try:
         await preflight_request(
             provider_model,
@@ -353,7 +362,7 @@ async def preflight_model_connection(
         )
         try:
             await preflight_request(
-                BenProvider().get_model(model),
+                BenProvider(api_key=api_key, base_url=api_base).get_model(model),
                 model_name=model,
                 extra_headers=settings.llm.extra_headers,
                 extra_body=settings.llm.extra_body,

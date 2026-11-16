@@ -118,6 +118,11 @@ class ScanLauncher:
                 command.extend(["--instruction", instruction.strip()])
             self.control_path = self.log_path.with_suffix(".pause")
             environment = dict(os.environ, BEN_SCAN_PAUSE_FILE=str(self.control_path))
+            # Key 池 active 连接在扫描子进程启动时生效：整体替换对应档位的
+            # 模型/Key/端点环境变量（含厂商专属变量），不影响进行中的扫描。
+            from Ben.config.keypool import apply_to_env
+
+            environment = dict(apply_to_env(environment))
             try:
                 with self.log_path.open("w", encoding="utf-8") as output:
                     self.process = subprocess.Popen(

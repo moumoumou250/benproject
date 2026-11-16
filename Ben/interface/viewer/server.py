@@ -163,7 +163,7 @@ def _make_handler(state: _ViewerState) -> type[BaseHTTPRequestHandler]:
         def do_POST(self) -> None:
             path = urlsplit(self.path).path
             try:
-                if path in {"/api/scans", "/api/scans/pause", "/api/scans/resume"}:
+                if path in {"/api/scans", "/api/scans/pause", "/api/scans/resume", "/api/keypool"}:
                     if not self._has_session():
                         self._send_json(HTTPStatus.FORBIDDEN, {"error": "forbidden"})
                         return
@@ -172,6 +172,9 @@ def _make_handler(state: _ViewerState) -> type[BaseHTTPRequestHandler]:
                         origin and urlsplit(origin).netloc != self.headers.get("Host")
                     ):
                         self._send_json(HTTPStatus.FORBIDDEN, {"error": "forbidden"})
+                        return
+                    if path == "/api/keypool":
+                        self._handle_keypool()
                         return
                     if state.launcher is None:
                         self._send_json(HTTPStatus.FORBIDDEN, {"error": "launcher unavailable"})
@@ -231,6 +234,12 @@ def _make_handler(state: _ViewerState) -> type[BaseHTTPRequestHandler]:
                 self._send_json(HTTPStatus.FORBIDDEN, {"error": "forbidden"})
                 return
 
+            if path == "/api/keypool":
+                from Ben.config.keypool import status_payload
+
+                self._send_json(HTTPStatus.OK, status_payload())
+                return
+
             if path == "/api/scans":
                 self._send_json(
                     HTTPStatus.OK,
@@ -283,6 +292,50 @@ def _make_handler(state: _ViewerState) -> type[BaseHTTPRequestHandler]:
 
         # Cap on a steering message so a runaway client cannot flood the agent.
         _STEER_MESSAGE_MAX = 4000
+
+        def _handle_keypool(self) -> None:
+            """Key 池动作：add / switch / clear / delete / test。
+
+            与 /api/scans 同一防线（会话 cookie + 同源），返回值里的 key
+            一律是尾 4 位掩码；写操作针对 ``~/.ben/keypool.json``，在下一
+            次扫描子进程启动时生效，进行中的扫描不受影响。
+            """
+            from Ben.config import keypool
+
+            body = self._read_body()
+            action = body.get("action")
+            try:
+                if action == "add":
+                    entry = keypool.add_entry(
+                        str(body.get("tier") or ""),
+                        str(body.get("model") or ""),
+                        str(body.get("api_key") or ""),
+                        str(body.get("base_url") or ""),
+                        str(body.get("label")) if body.get("label") else None,
+                    )
+                    payload: dict[str, Any] = {"ok": True, "entry": keypool.entry_view(entry)}
+                elif action == "switch":
+                    entry = keypool.switch_entry(str(body.get("id") or ""))
+                    payload = {"ok": True, "entry": keypool.entry_view(entry)}
+                elif action == "clear":
+                    keypool.clear_tier(str(body.get("tier") or ""))
+                    payload = {"ok": True}
+                elif action == "delete":
+                    entry = keypool.delete_entry(str(body.get("id") or ""))
+                    payload = {"ok": True, "entry": keypool.entry_view(entry)}
+                elif action == "test":
+                    payload = keypool.test_entry(str(body.get("id") or ""))
+                else:
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "unknown_action"})
+                    return
+            except ValueError as exc:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                return
+            except Exception:
+                logger.exception("keypool action failed: %s", action)
+                self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "keypool_action_failed"})
+                return
+            self._send_json(HTTPStatus.OK, payload)
 
         def _handle_steer(self) -> None:
             if not self._has_session():

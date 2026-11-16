@@ -41,3 +41,10 @@ Ben/rag/vector_store/*.sqlite3*
 # 一次性 RAG 安装实验产物（uv export / 临时依赖目录），用完即删
 .rag-*/
 .rag-*.txt
+
+# 信息收集产物（recon CLI；含目标响应原文，绝不入库）
+recon/
+
+# 临时校验环境（本地跑测试用，不入库）
+.venv-verify/
+.tmp-verify/

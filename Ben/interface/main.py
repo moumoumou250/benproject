@@ -18,6 +18,22 @@
   # 交互模式（agent 可 wait_for_user 交还控制权）
   .venv/Scripts/python.exe main.py -t https://staging.example.com --interactive
 
+  # 目标预检（不启动扫描、不消耗模型额度；检查授权范围与可达性）
+  .venv/Scripts/python.exe main.py preflight http://target.example:8080/
+  .venv/Scripts/python.exe main.py preflight --target-list ./targets.txt --json
+
+  # 只做信息收集（只读 GET，不调模型、不建 run；产物落 recon/<host>_<时间戳>/）
+  .venv/Scripts/python.exe main.py recon http://target.example:8080/
+  .venv/Scripts/python.exe main.py recon https://staging.example.com --json --no-write
+
+  # 侦察兵（时间盒 + 端口/版本/入口面 + easy|medium|hard 裁定；可导出 sapper fact）
+  .venv/Scripts/python.exe main.py scout http://target.example:8080/ --minutes 4
+  .venv/Scripts/python.exe main.py scout http://target.example:8080/ --emit sapper
+
+  # 聚焦单类漏洞（只加载对应技能，开一个子 agent，不做全量侦察）
+  .venv/Scripts/python.exe main.py vuln --list
+  .venv/Scripts/python.exe main.py vuln sqli -t http://target.example:8080/ --max-turns 8
+
   # 本地网页查看器（实时/已完成的 run，含 PDF 导出）
   .venv/Scripts/python.exe main.py view [run_name] [--port 8080] [--host 127.0.0.1]
 
@@ -111,7 +127,21 @@ if _dotenv_path.exists():
         os.environ.pop("ALLOWED_TARGETS", None)
 
 from Ben.config import load_settings  # noqa: E402
+from Ben.config.keypool import apply_to_env  # noqa: E402
 from Ben.interface.cli.arguments import parse_arguments  # noqa: E402
+
+
+def _apply_keypool_overrides() -> None:
+    """Key 池 active 连接对 CLI 路径（扫描 / 自检）同样生效。
+
+    Web 控制台切换写入 ~/.ben/keypool.json；本进程直接改写 os.environ，
+    在 load_settings 之前调用，使 pydantic-settings 以进程环境优先读到
+    池里的连接。无 active entry 时不改任何变量（.env 默认行为）。
+    """
+    try:
+        apply_to_env()
+    except Exception:  # noqa: BLE001 - 池文件损坏不该挡住启动，回退 .env
+        logging.getLogger(__name__).warning("keypool 应用失败，使用 .env 默认配置", exc_info=True)
 
 
 def _setup_logging(verbose: bool) -> None:
@@ -130,45 +160,41 @@ def _selftest_docker() -> int:
 
 
 def _selftest_llm() -> int:
-    """模型文本连通验证：用 openai-agents SDK 发一条最小请求并打印回复。"""
+    """模型文本连通验证：总节点（LLM_MODEL）+ 子节点（BEN_FLASH_MODEL）。
+
+    模型分层下 root agent 用总节点做决策，子 agent 用子节点做量产——两个
+    节点的 key/端点/厂商都可能不同，必须分别发一条最小真实请求验证，任一
+    配置的节点不可用都不能直接开扫（否则要么 root 起不来，要么所有子 agent
+    空转烧总节点额度）。子节点未配置时合法（所有 agent 共用总节点），跳过
+    并说明，不算失败。
+    """
     settings = load_settings(require_api_key=True)
-    print(f"[1/2] 配置 SDK（model={settings.llm.model} @ {settings.llm.base_url}）...")
-
-    from Ben.config import configure_sdk_model_defaults
-    configure_sdk_model_defaults(settings)
-
-    # 用 SDK 的 Runner 做最小连通测试（不使用 sandbox）
-    # model_provider 挂 BenProvider，与正式运行同一路由（支持 厂商/模型 前缀）
-    from agents import RunConfig, Runner
-    from agents.agent import Agent
-    from Ben.config.models import BenProvider
-
-    test_agent = Agent(
-        name="connectivity-test",
-        instructions="你是连通性测试助手，用一句话回答。",
-        tools=[],
-        model=settings.llm.model,
-    )
-    run_config = RunConfig(
-        model=settings.llm.model,
-        model_provider=BenProvider(),
-        trace_include_sensitive_data=False,
-    )
-
-    print("[2/2] 调用模型 ...")
     import asyncio
 
-    async def _test() -> str:
+    from Ben.config import configure_sdk_model_defaults
+
+    configure_sdk_model_defaults(settings)
+
+    from agents import RunConfig, Runner
+    from agents.agent import Agent
+    from agents.items import MessageOutputItem
+    from Ben.config.models import BenProvider, build_flash_model
+
+    _INSTRUCTIONS = "你是连通性测试助手，用一句话回答。"
+    _INPUT = "请回复：模型连接正常"
+
+    async def _probe(agent: Agent, run_config: RunConfig) -> str:
+        # 与正式运行同一路由（model_provider 挂 BenProvider，支持 厂商/模型
+        # 前缀）；flash 子节点直接用 build_flash_model 的 Model 实例——
+        # 那正是运行时子 agent 拿到的同一个对象（含流式守卫/turn guard）。
         stream = Runner.run_streamed(
-            test_agent,
-            input="请回复：模型连接正常",
+            agent,
+            input=_INPUT,
             run_config=run_config,
             max_turns=1,
         )
         async for _ in stream.stream_events():
             pass
-        # 提取最终文本
-        from agents.items import MessageOutputItem
         texts: list[str] = []
         for item in stream.new_items:
             if isinstance(item, MessageOutputItem):
@@ -184,14 +210,68 @@ def _selftest_llm() -> int:
                                 texts.append(t)
         return "\n".join(texts)
 
-    try:
-        reply = asyncio.run(_test())
-    except Exception as exc:
-        print(f"[FAIL] {exc}")
-        return 1
+    flash_name = settings.llm.flash_model
+    total_steps = 3 if flash_name else 2
+    print(f"[1/{total_steps}] 配置 SDK（model={settings.llm.model} @ {settings.llm.base_url}）...")
 
-    print(f"模型回复：{reply}")
-    print("ALL OK - 模型文本调用正常")
+    results: list[tuple[str, bool, str]] = []
+
+    # ---- 总节点：root agent / 决策档 ----
+    print(f"[2/{total_steps}] 总节点 LLM_MODEL = {settings.llm.model}")
+    root_agent = Agent(
+        name="connectivity-test",
+        instructions=_INSTRUCTIONS,
+        tools=[],
+        model=settings.llm.model,
+    )
+    root_run_config = RunConfig(
+        model=settings.llm.model,
+        model_provider=BenProvider(),
+        trace_include_sensitive_data=False,
+    )
+    try:
+        reply = asyncio.run(_probe(root_agent, root_run_config))
+        print(f"  模型回复：{reply}")
+        print("  [OK] 总节点可用")
+        results.append((f"总节点 LLM_MODEL={settings.llm.model}", True, ""))
+    except Exception as exc:
+        print(f"  [FAIL] {exc}")
+        results.append((f"总节点 LLM_MODEL={settings.llm.model}", False, str(exc)))
+
+    # ---- 子节点：flash 档（子 agent 量产）；未配置则跳过 ----
+    if not flash_name:
+        print("  子节点 BEN_FLASH_MODEL 未配置 —— 子 agent 将共用总节点模型（跳过检测，不算失败）")
+    else:
+        print(f"[3/{total_steps}] 子节点 BEN_FLASH_MODEL = {flash_name}")
+        try:
+            flash_model = build_flash_model(settings)
+            flash_agent = Agent(
+                name="connectivity-test-flash",
+                instructions=_INSTRUCTIONS,
+                tools=[],
+                model=flash_model,
+            )
+            flash_run_config = RunConfig(
+                model=None,  # flash Model 实例挂在 agent 上，SDK 直接使用
+                model_provider=BenProvider(),
+                trace_include_sensitive_data=False,
+            )
+            reply = asyncio.run(_probe(flash_agent, flash_run_config))
+            print(f"  模型回复：{reply}")
+            print("  [OK] 子节点可用")
+            results.append((f"子节点 BEN_FLASH_MODEL={flash_name}", True, ""))
+        except Exception as exc:
+            print(f"  [FAIL] {exc}")
+            results.append((f"子节点 BEN_FLASH_MODEL={flash_name}", False, str(exc)))
+
+    print()
+    for label, ok, _err in results:
+        print(f"  {'[OK]' if ok else '[FAIL]'} {label}")
+    failed = [r for r in results if not r[1]]
+    if failed:
+        print("ALL FAIL - 存在不可用的模型节点，开扫前请先修复配置")
+        return 1
+    print("ALL OK - 已配置的模型节点全部可用")
     return 0
 
 
@@ -288,6 +368,15 @@ def _run_task(args) -> int:
     validate_environment()
     pull_docker_image()
 
+    # 目标闸门：目标不可达就别开跑（历史教训：117-72-199-2-3000 那次靶场没起，
+    # 白烧 445 秒与百万 token）。本地目录/仓库/spec 不在这里判，交给 prepare_run。
+    if not getattr(args, "skip_preflight", False):
+        from Ben.interface.cli.target_check import check_run_targets
+
+        blocked = check_run_targets(args)
+        if blocked is not None:
+            return blocked
+
     from Ben.interface.cli.scan_setup import PreparationError, prepare_run
 
     try:
@@ -370,6 +459,23 @@ def main() -> int:
         from Ben.interface.cli.completions import run_completions
 
         return run_completions(sys.argv[2:])
+    if len(sys.argv) > 1 and sys.argv[1] in ("preflight", "check", "target-check"):
+        from Ben.interface.cli.target_check import run_preflight
+
+        return run_preflight(sys.argv[2:])
+    if len(sys.argv) > 1 and sys.argv[1] in ("recon", "recon-only"):
+        from Ben.interface.cli.recon import run_recon
+
+        return run_recon(sys.argv[2:])
+    if len(sys.argv) > 1 and sys.argv[1] in ("scout", "scout-only"):
+        from Ben.interface.cli.scout import run_scout
+
+        return run_scout(sys.argv[2:])
+    if len(sys.argv) > 1 and sys.argv[1] == "vuln":
+        from Ben.interface.cli.vuln import run_vuln
+
+        # 传入 _run_task，避免以 `__main__` 运行时二次导入本模块。
+        return run_vuln(sys.argv[2:], run_task=_run_task)
 
     args = parse_arguments()
 
@@ -382,6 +488,7 @@ def main() -> int:
 
     _apply_runtime_env(args)
     _setup_logging(args.verbose)
+    _apply_keypool_overrides()
 
     if getattr(args, "resume_picker", False):
         from rich.console import Console

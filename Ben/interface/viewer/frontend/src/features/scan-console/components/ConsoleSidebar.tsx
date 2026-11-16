@@ -1,10 +1,11 @@
-import { LayoutDashboard, Activity, History, ShieldCheck } from "lucide-react";
+import { LayoutDashboard, Activity, History, ShieldCheck, KeyRound } from "lucide-react";
 import type { ConsoleView } from "../types";
 import type { ReactNode } from "react";
 const items = [
   { id: "overview", label: "测试工作台", icon: LayoutDashboard },
   { id: "activity", label: "实时运行", icon: Activity },
   { id: "history", label: "历史报告", icon: History },
+  { id: "keys", label: "Key 池", icon: KeyRound },
 ] as const;
 export function ConsoleSidebar({
   view,

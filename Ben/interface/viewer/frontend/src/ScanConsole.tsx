@@ -5,6 +5,7 @@ import { ConsoleSidebar } from "./features/scan-console/components/ConsoleSideba
 import { ScanForm } from "./features/scan-console/components/ScanForm";
 import { ScanProgress } from "./features/scan-console/components/ScanProgress";
 import { RunHistory } from "./features/scan-console/components/RunHistory";
+import { KeyPoolPanel } from "./features/scan-console/components/KeyPoolPanel";
 import { useScanConsole } from "./features/scan-console/hooks/useScanConsole";
 import type { ConsoleView, ScanRequest } from "./features/scan-console/types";
 import "./scan-console.css";
@@ -14,12 +15,15 @@ const titles = {
   overview: ["测试工作台", "创建任务，并实时跟踪网站测试的每一步。"],
   activity: ["实时运行", "查看模型活动、工具调用与当前执行阶段。"],
   history: ["历史报告", "回顾测试结果，查看完整记录与证据。"],
+  keys: ["Key 池", "管理模型厂商 Key：查看生效连接、添加并切换。"],
 };
 export default function ScanConsole() {
   const viewing = new URLSearchParams(location.search).get("view") === "run";
   const [view, setView] = useState<ConsoleView>(() => {
     const value = location.hash.slice(1);
-    return value === "activity" || value === "history" ? value : "overview";
+    return value === "activity" || value === "history" || value === "keys"
+      ? value
+      : "overview";
   });
   const { status, runs, detail, error, pending, updatedAt, start } =
     useScanConsole(!viewing);
@@ -129,6 +133,7 @@ export default function ScanConsole() {
             </div>
           )}
           {view === "history" && <RunHistory runs={runs} searchable />}
+          {view === "keys" && <KeyPoolPanel />}
         </main>
         <footer>BEN · 网站安全测试工作空间</footer>
       </div>

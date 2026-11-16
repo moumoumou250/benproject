@@ -162,6 +162,21 @@ def _urgency(stage: int) -> str:
     return _STAGE_LABELS[stage]
 
 
+def _agent_model_name(agent: Agent[dict[str, Any]]) -> str | None:
+    """该 agent 实际使用的模型名；None 表示沿用 run 级模型。
+
+    模型分层（BEN_FLASH_MODEL）下子 agent 的 Agent.model 是 BenProvider
+    解析出的 Model 实例（RequestLoggingModel 暴露 ``model`` 属性），root
+    及未分层子 agent 的 Agent.model 是 None。按 agent 各自的模型名记价，
+    否则 flash 档的用量会按旗舰档单价记账。
+    """
+    model = getattr(agent, "model", None)
+    if isinstance(model, str):
+        return model
+    name = getattr(model, "model", None)
+    return name if isinstance(name, str) and name else None
+
+
 class ReportUsageHooks(RunHooks[dict[str, Any]]):
     """Persist SDK-native usage and warn/stop as turn and cost budgets are consumed."""
 
@@ -416,7 +431,7 @@ class ReportUsageHooks(RunHooks[dict[str, Any]]):
             report_state.record_sdk_usage(
                 agent_id=agent_id,
                 agent_name=agent_name,
-                model=self._model,
+                model=_agent_model_name(agent) or self._model,
                 usage=response.usage,
             )
         except Exception:

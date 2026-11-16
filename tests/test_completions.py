@@ -25,6 +25,16 @@ def test_root_completion_candidates() -> None:
     assert completion_candidates(["vi"]) == ["view"]
     assert "completions" in completion_candidates([""])
     assert "completion" in completion_candidates(["complet"])
+    assert "vuln" in completion_candidates(["vu"])
+
+
+def test_vuln_completion_candidates() -> None:
+    # 漏洞类型来自 Ben/skills/vulnerabilities，因此补全是活的
+    assert "xss" in completion_candidates(["vuln", "x"])
+    assert "--skills" in completion_candidates(["vuln", "--sk"])
+    assert "sql-injection" in completion_candidates(["vuln", "sql"])
+    # 值是手填的（轮数、URL），不补全
+    assert completion_candidates(["vuln", "--max-turns", ""]) == []
 
 
 def test_view_flag_candidates() -> None:

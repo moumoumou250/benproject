@@ -205,13 +205,19 @@ docker run -d --name juice-shop --network benptnet -p 3000:3000 `
 # [2] 工具层：真实在容器内对授权目标执行一次 HTTP 检查（无需 Key）
 .\.venv\Scripts\python.exe main.py --selftest-tools
 
-# [3] 模型文本调用：确认 Key / 接口 / 模型可用（需要 .env）
+# [3] 模型文本调用：确认 Key / 接口 / 模型可用（需要 .env）；
+#     模型分层时同时验证总节点 LLM_MODEL 与子节点 BEN_FLASH_MODEL，
+#     子节点未配置则跳过（子 agent 共用总节点），任一已配置节点不可用则退出 1
 .\.venv\Scripts\python.exe main.py --selftest-llm
 ```
 
 ## 八、运行完整任务
 
 ```powershell
+# [0] 目标预检（只读，不建 run、不调用模型）：先确认目标真的可达
+.\.venv\Scripts\python.exe main.py preflight http://target.example:8080/
+.\.venv\Scripts\python.exe main.py preflight --target-list .\targets.txt --json
+
 # 命令行 URL 必须落在 .env 的 ALLOWED_TARGETS 内。
 # 不传 URL 时使用该白名单的第一项；白名单为空则拒绝启动。
 .\.venv\Scripts\python.exe main.py http://target.example:8080/
@@ -225,6 +231,144 @@ docker run -d --name juice-shop --network benptnet -p 3000:3000 `
 # 输出 DEBUG 级详细日志
 .\.venv\Scripts\python.exe main.py -v
 ```
+
+预检做什么（三层，缺一不可）：
+
+1. **authorize**：目标主机必须在 `ALLOWED_TARGETS` 内。不在的话工具层会逐条
+   拒绝命令，扫描必然空转；
+2. **probe-host**：宿主机视角 DNS → TCP → HTTP（不走环境代理，不跟随跳转）；
+   只连上 TCP 不算可达，拿不到 HTTP 响应即判失败（透明代理/TUN 下任意 IP 都能
+   "连上"，只有 HTTP 应答能证明站点真的活着）；
+3. **probe-container**：在 `benptnet` 容器内 `curl`。宿主可达 ≠ 容器可达，
+   `172.19.0.2` 这类地址只有容器视角的结论才算数。
+
+**"通不通"和"能不能扫"分开报**：白名单外但站点活着，结论是「可达 · 未授权」，
+不会被一句"不可达"掩盖掉——这两件事的补救动作完全不同（开服务 vs 改白名单）。
+
+扫描启动时会自动跑一次同样的预检，不可达就**在创建 run 之前退出**，不消耗模型
+额度；确认要跳过用 `--skip-preflight`，只想看宿主机视角用 `preflight --no-docker`。
+
+`preflight` 的退出码：
+
+| 码 | 含义 | 补救 |
+|---|---|---|
+| 0 | 可达且已授权 | 可以直接扫 |
+| 1 | 不可达（DNS/端口/路由） | 先让服务起来 |
+| 2 | 可达但未授权 | 加进 `ALLOWED_TARGETS` |
+
+### 只做信息收集：`ben recon`
+
+预检回答"通不通、授没授权"，`recon` 回答"**这是什么**"。它是确定性侦察：不调
+模型、不建 run、不消耗额度，只发 GET，产物可 diff、可进 CI。
+
+```powershell
+# 默认：根路径 + 24 条定点路径 + TLS + 同源 JS 提取 → 产物落 recon/<host>_<时间戳>/
+.\.venv\Scripts\python.exe main.py recon http://target.example:8080/
+
+# 只要 JSON（管道用），不落盘
+.\.venv\Scripts\python.exe main.py recon https://staging.example.com --json --no-write
+
+# 不启动容器（只看本机网络位置）；或自定义路径清单
+.\.venv\Scripts\python.exe main.py recon http://10.0.0.5:8080 --no-docker
+.\.venv\Scripts\python.exe main.py recon http://host:3000 --path-list my-paths.txt --max-paths 40
+```
+
+产物（与 sapper 的事实图同构：`kind` + `data`，便于脚本或后续 run 直接读）：
+
+```
+recon/<host>_<时间戳>/
+├── recon.json   结构化事实：host / service / http / tls / surface / endpoint / param / note
+├── recon.md     人读版：清单 + 判定 + 建议下一步
+└── raw/         证据原文（只留文本类响应，单文件截断）
+```
+
+**边界是刻意的**：
+
+- 只发 GET；不提交表单、不登录、不爆破；
+- 每条命令都过 `Ben/agents/factory.py:_check_command_allowed`——与 Agent 同一道
+  闸门，CLI 不比 Agent 多一分权限；跨主机的 JS/静态引用只记录、不抓取；
+- 目标必须在 `ALLOWED_TARGETS` 内，否则**退出 2、一个请求都不发**；
+- 安全响应头缺失只进"建议"，按项目口径不认定为漏洞。
+
+退出码：0 完成；1 不可达/执行失败；2 未授权。
+
+### 判断该派谁去：`ben scout`
+
+`recon` 回答"这是什么"，`scout` 回答"**下一步派谁、值不值得派**"。它是 sapper
+里那个"4 分钟侦察兵"的确定性版本：**时间盒 + 端口/版本/入口面 + easy|medium|hard**，
+不调模型、结果可复现，产物可以直接写成 sapper 的 fact。
+
+```powershell
+# 默认：4 分钟时间盒 + 常见端口 + 入口面优先的路径表
+.\.venv\Scripts\python.exe main.py scout http://target.example:8080/
+
+# 直接吐 sapper 命令，粘过去就上板
+.\.venv\Scripts\python.exe main.py scout http://target.example:8080/ --emit sapper | sh
+
+# 只扫指定端口；或完全不扫端口（只看 HTTP 面）
+.\.venv\Scripts\python.exe main.py scout http://10.0.0.5:8080 --ports 22,80,443,8080
+.\.venv\Scripts\python.exe main.py scout http://10.0.0.5:8080 --no-ports --no-docker
+```
+
+产物：
+
+```
+recon/<host>_<时间戳>_scout/
+├── scout.json       事实 + 裁定（verdict：level/confidence/分数/每条依据）
+├── scout.md         人读版：服务表 + 版本台账 + 入口面 + 裁定依据
+├── facts.jsonl      每行一条 fact（喂给别的工具）
+├── facts.sapper.sh  逐条 `sapper fact -k … -d …`（可直接 sh 执行）
+└── raw/             证据原文
+```
+
+它比 `recon` 多做的三件事，以及各自的诚实边界：
+
+| 新增 | 怎么做 | 边界 |
+|---|---|---|
+| **端口/服务** | 容器内 `nmap -sT`（有则用 `-sV` 分批对已开端口做版本识别）；无 nmap 退 `nc -z` | 镜像里的 nmap 带 file capabilities，可能 exec 失败（exit 126）：此时自动拷一份无特权副本跑 `-sT`；`nc` 只能回答"通/不通"，区分不了 closed 与 filtered；两者都不可用才跳过并说明，不降级到宿主机裸 socket（那会绕过授权闸门） |
+| **版本台账** | 合并 nmap `-sV`、`Server`/`X-Powered-By`、正文指纹，以及已知应用的公开版本接口（如 Juice Shop 的 `/rest/admin/application-version`），按产品去重取最高置信度 | **钉不死是合法结论**：没有 high/medium 版本时输出 `payload_policy=no-blind-payload`，绝不猜一个版本出来；**只有 web 面版本算钉死**，ssh/mysql 的版本记作"旁路"不参与判定 |
+| **难度裁定** | 确定性规则打分（easy/hard 两个方向，每条带权重与理由） | 是**排序判断**，不是漏洞结论，不进报告；置信 low 时建议"再侦察一次"而不是硬派 |
+
+裁定 → 派单：`easy`/`medium` → 士兵（medium 加 15 分钟复查）；`hard` → 将军；全站
+软 404 导致测量不可信时 → `scout-again`。软 404 与真实命中可以并存：只要有一条路径
+与随机基线不同，就只信那几条，不整片否定路径结论。
+
+边界与 `recon` 一致：只读（GET/HEAD + TCP 连接探测）、每条命令过同一道闸门、
+目标不在 `ALLOWED_TARGETS` 内则退出 2 且零网络动作。退出码：0 完成；1 不可达/执行
+失败；2 未授权。
+
+### 聚焦单类漏洞：`ben vuln`
+
+整轮扫描很贵：多个子 agent、全类型铺开、侦察与测试混在一起。当你只想确认
+「这个站有没有 SQL 注入」时，用 `vuln` 只加载那一类漏洞的方法论，把范围收窄。
+
+```powershell
+# 先看有哪些类型（不需要 .env，不启容器，不花额度）
+.\.venv\Scripts\python.exe main.py vuln --list
+
+# 只测 SQL 注入：别名 sqli → Ben/skills/vulnerabilities/sql-injection.md
+.\.venv\Scripts\python.exe main.py vuln sqli -t http://target.example:8080/ --max-turns 8
+
+# 多个类型 / 加挂工具技能 / 先看会注入什么
+.\.venv\Scripts\python.exe main.py vuln "xss,csrf" --skills tooling/nuclei -t http://target.example:8080/
+.\.venv\Scripts\python.exe main.py vuln idor -t http://target.example:8080/ --dry-run
+```
+
+它只做三件事，其余全部复用普通扫描的链路（`prepare_run` → `AgentRunner` → `run_cli`），
+因此授权闸门、预检、沙箱、报告与 run 记录完全一致：
+
+1. 把 `sqli` / `SQL_Injection` / `lfi` 这类写法解析成 `vulnerabilities/<name>`；
+2. **启动前**校验技能真的存在（`_resolve_skills` 对未知名是静默跳过，不校验的话
+   你会得到一次"看起来在测 SQLi、其实没加载任何 SQLi 方法论"的扫描）；
+3. 在 instruction 前拼一段 `<focused_scan>`：只开**一个**子 agent、技能挂在该子
+   agent 上、不做无关枚举、测完即 `finish_scan`。
+
+边界要说清楚：**编排发生在提示词里，不是代码里**。root 仍是纯编排者，靠
+`create_agent(skills=[...])` 拉起子 agent；模型不遵守时由 `--max-turns` /
+`--max-budget` 兜底。另外只读闸门不受影响——需要请求体的探测要么走代理工具的
+`repeat_request`，要么会被 `curl -d` / `sqlmap --data` 的拒绝规则挡下。
+
+退出码：0 完成；2 类型无法解析/参数非法；其余同普通扫描（`--fail-on` 命中时 1）。
 
 ## 九、输出说明
 

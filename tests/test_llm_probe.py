@@ -36,6 +36,8 @@ def test_preflight_drops_openai_when_responses_are_rejected(
             return None
 
     class _Provider:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:  # 预检现按节点传凭据覆盖
+            pass
         def get_model(self, name: str) -> Any:
             built.append(name)
             return _Fail() if len(built) == 1 else _Ok()
@@ -62,6 +64,8 @@ def test_preflight_reuse_skips_a_second_call(monkeypatch: pytest.MonkeyPatch) ->
             calls.append("sent")
 
     class _Provider:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:  # 预检现按节点传凭据覆盖
+            pass
         def get_model(self, name: str) -> Any:
             return _Ok()
 
@@ -84,6 +88,8 @@ def test_non_grok_unsupported_does_not_keep_using_openai(monkeypatch: pytest.Mon
             raise RuntimeError("streaming is not supported by this endpoint")
 
     class _Provider:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:  # 预检现按节点传凭据覆盖
+            pass
         def get_model(self, name: str) -> Any:
             return _Fail()
 

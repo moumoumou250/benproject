@@ -45,6 +45,10 @@ python main.py http://target.example:8080/    # URL 必须在 .env 的 ALLOWED_T
 python main.py -n -t <url> -m quick --max-turns 20 --max-budget 1 --instruction "..."
 python main.py -r <run_name>                    # resume a prior run from strix_runs/<name>/run.json
 
+# Recon only — no model, no run record (README §八「只做信息收集」)
+python main.py recon http://target.example:8080/          # → recon/<host>_<stamp>/{recon.json,recon.md,raw/}
+python main.py recon <url> --json --no-write              # pipe-friendly, writes nothing
+
 # React scan console (see "Interfaces")
 python -m Ben.interface.web            # default port 8765, opens browser
 python main.py view [<run>]            # read-only viewer for one run
