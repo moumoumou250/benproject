@@ -782,6 +782,37 @@ class AgentRunner:
         hydrate_threat_models_from_disk(state_dir)
         hydrate_task_claims_from_disk(state_dir)
         hydrate_verify_from_disk(state_dir)
+        from Ben.core.task_graph import (
+            hydrate_task_graph_from_disk,
+            ingest_seed_facts,
+            sweep_stale_claimed_intents,
+        )
+
+        hydrate_task_graph_from_disk(state_dir)
+        # prepare_run 把 seed 写进 workspace_files；此处落盘路径已就绪，再幂等灌图。
+        for entry in self.workspace_files or []:
+            if entry.get("workspace_path") != "/workspace/preseed/facts.json":
+                continue
+            raw = entry.get("content")
+            if isinstance(raw, bytes):
+                try:
+                    payload = json.loads(raw.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    break
+            elif isinstance(raw, str):
+                try:
+                    payload = json.loads(raw)
+                except json.JSONDecodeError:
+                    break
+            else:
+                break
+            facts = payload.get("facts") if isinstance(payload, dict) else None
+            if isinstance(facts, list):
+                ingest_seed_facts(
+                    [f for f in facts if isinstance(f, dict)],
+                    creator="seed",
+                )
+            break
         bind_orchestration_metrics(run_dir)
         bind_heartbeat(run_dir)
 
@@ -807,6 +838,29 @@ class AgentRunner:
             if root_id is None:
                 raise RuntimeError(
                     f"无法恢复 run {run_name}：agents.json 中没有 root agent（parent=None）"
+                )
+            # 启动期清扫：worker 已终态的 claimed intent 放回 open，避免 DFS 变窄。
+            from Ben.core.agents import ACTIVE_STATUSES, TERMINAL_STATUSES
+
+            live = {
+                aid
+                for aid, st in coordinator.statuses.items()
+                if st in ACTIVE_STATUSES
+            }
+            terminal = {
+                aid
+                for aid, st in coordinator.statuses.items()
+                if st in TERMINAL_STATUSES
+            }
+            swept = sweep_stale_claimed_intents(
+                live_agent_ids=live,
+                terminal_agent_ids=terminal,
+            )
+            if swept:
+                logger.info(
+                    "Resume: reopened %d stale claimed intent(s): %s",
+                    len(swept),
+                    swept,
                 )
             logger.info(
                 "Resume: 已恢复 coordinator（%d 个 agent）；root=%s",
@@ -1025,6 +1079,11 @@ class AgentRunner:
                     root_strict_tool_schemas=strict_tool_schemas,
                     root_supports_images=supports_images,
                 )
+                # 初始阶段只热 recon：后续 enum/exploit 懒装配。
+                prefetch = getattr(child_agent_builder, "prefetch_profiles", None)
+                if callable(prefetch):
+                    with contextlib.suppress(Exception):
+                        prefetch(("recon",))
 
                 async def spawn_child_agent(**kwargs):  # noqa: ANN202, ANN003
                     return await start_child_agent(

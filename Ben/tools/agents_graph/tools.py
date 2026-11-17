@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import uuid
@@ -503,6 +504,8 @@ async def create_agent(
     surface: str | None = None,
     risk_area: str | None = None,
     tier: Literal["scout", "hunter", "validator", "general"] = "hunter",
+    profile: str | None = None,
+    intent_id: str | None = None,
 ) -> str:
     """Spawn a specialist child agent to run in parallel.
 
@@ -564,6 +567,12 @@ async def create_agent(
         tier: Model/role tier — ``scout`` / ``hunter`` / ``validator``
             use the flash child model; ``general`` uses the flagship
             model (concurrency capped by ``BEN_MAX_GENERALS``).
+        profile: Optional tool-face profile (``recon`` / ``enum`` /
+            ``exploit`` / ``validate`` / ``sca``). ``recon``/``enum`` mount a
+            minimal toolkit and require structured ledger writes before
+            finish. Omit for the full child tool surface.
+        intent_id: Optional task_graph intent id. When set, profile /
+            surface / task are filled from the intent (DFS scheduler).
     """
     # 此处是工具从ctx.context取的三个东西
     inner = _ctx(ctx)
@@ -635,19 +644,149 @@ async def create_agent(
             default=str,
         )
 
+    profile_s = (profile or "").strip() or None
+    intent_s = (intent_id or "").strip() or None
+    if profile_s:
+        try:
+            from Ben.agents.profiles import normalize_profile
+
+            normalize_profile(profile_s)
+        except ValueError as exc:
+            return json.dumps(
+                {"success": False, "error": str(exc), "agent_id": None},
+                ensure_ascii=False,
+                default=str,
+            )
+
+    # 强制 DFS：recon/enum（或图上仍有 recon/enum open）时无 intent_id 则代领队首。
+    _FORCE_PROFILES = frozenset({"recon", "enum"})
+    try:
+        from Ben.agents.profiles import normalize_profile as _norm_prof
+        from Ben.core.task_graph import (
+            get_intent,
+            has_open_intents,
+            select_next_intent,
+        )
+
+        profile_key = _norm_prof(profile_s) if profile_s else None
+        force_dfs = profile_key in _FORCE_PROFILES or (
+            profile_key is None and has_open_intents(profiles=_FORCE_PROFILES)
+        )
+        if force_dfs and not intent_s:
+            chosen = select_next_intent(
+                profiles=(
+                    frozenset({profile_key})
+                    if profile_key in _FORCE_PROFILES
+                    else _FORCE_PROFILES
+                )
+            )
+            if chosen is None:
+                if profile_key in _FORCE_PROFILES:
+                    return json.dumps(
+                        {
+                            "success": False,
+                            "agent_id": None,
+                            "error": (
+                                f"no open {profile_key} intents in task_graph; "
+                                "refuse spawning a free-form recon/enum agent. "
+                                "Add facts/intents first or use profile=exploit."
+                            ),
+                        },
+                        ensure_ascii=False,
+                        default=str,
+                    )
+            else:
+                intent_s = str(chosen.get("id") or "")
+                if not profile_s and chosen.get("profile"):
+                    profile_s = str(chosen.get("profile"))
+                if not (surface or "").strip() and chosen.get("surface"):
+                    surface = str(chosen.get("surface"))
+                if not (risk_area or "").strip() and chosen.get("risk_area"):
+                    risk_area = str(chosen.get("risk_area"))
+                if not (task or "").strip():
+                    task = str(
+                        chosen.get("description") or chosen.get("title") or task
+                    )
+        elif intent_s:
+            intent_row = get_intent(intent_s)
+            if intent_row is None:
+                return json.dumps(
+                    {
+                        "success": False,
+                        "agent_id": None,
+                        "error": f"unknown intent_id {intent_s}",
+                    },
+                    ensure_ascii=False,
+                    default=str,
+                )
+            if intent_row.get("status") not in {"open", "claimed"}:
+                return json.dumps(
+                    {
+                        "success": False,
+                        "agent_id": None,
+                        "error": (
+                            f"intent {intent_s} status={intent_row.get('status')}; "
+                            "expected open"
+                        ),
+                    },
+                    ensure_ascii=False,
+                    default=str,
+                )
+            if not profile_s and intent_row.get("profile"):
+                profile_s = str(intent_row.get("profile"))
+    except Exception:  # noqa: BLE001
+        logger.exception("create_agent: DFS intent selection failed")
+        return json.dumps(
+            {
+                "success": False,
+                "agent_id": None,
+                "error": "DFS intent selection failed; see logs",
+            },
+            ensure_ascii=False,
+            default=str,
+        )
+
+    # 合批：recon/enum + intent 且 profile.batch_ok 时，把同父兄弟 intent 并进 task。
+    task_body = task
+    if intent_s:
+        try:
+            from Ben.agents.profiles import get_profile
+            from Ben.core.task_graph import batch_sibling_intents, get_intent
+
+            intent = get_intent(intent_s)
+            if intent is not None:
+                pkey = profile_s or str(intent.get("profile") or "")
+                spec = get_profile(pkey)
+                if spec.batch_ok:
+                    siblings = batch_sibling_intents(intent_s, limit=5)
+                    if len(siblings) > 1:
+                        lines = [
+                            f"- [{s.get('id')}] {s.get('title')}: {s.get('description')}"
+                            for s in siblings
+                        ]
+                        task_body = (
+                            f"{task}\n\n<batch_intents count={len(siblings)}>\n"
+                            + "\n".join(lines)
+                            + "\n</batch_intents>"
+                        )
+        except Exception:  # noqa: BLE001
+            logger.debug("create_agent: batch sibling lookup failed", exc_info=True)
+
     # 子agent获取 ctx.turn_input 当前轮次的历史记录
     parent_history = list(ctx.turn_input) if inherit_context and ctx.turn_input else []
     try:
         result = await spawner(
             parent_ctx=inner,
             name=name,
-            task=task,
+            task=task_body,
             skills=skill_list,
             parent_history=parent_history,
             minutes=minutes,
             surface=surface,
             risk_area=risk_area,
             tier=tier,
+            profile=profile_s,
+            intent_id=intent_s,
         )
     except Exception as e:
         logger.exception("create_agent: scan runner failed to spawn child '%s'", name)
@@ -683,6 +822,7 @@ async def agent_finish(
     report_to_parent: bool = True,
     final_recommendations: list[str] | None = None,
     ruled_out_json: str | None = None,
+    result_json: str | None = None,
 ) -> str:
     """Subagent termination — post a completion report to the parent.
 
@@ -736,6 +876,10 @@ async def agent_finish(
             ``risk_area``, and ``evidence`` — persisted as coverage
             ``outcome=ruled_out``. Free-text ``open_items`` are **not**
             auto-written to the coverage ledger.
+        result_json: Optional structured result object (e.g. ``ports`` /
+            ``paths`` arrays). For ``recon``/``enum`` profiles this (or a
+            prior ``record_fact`` / ``record_coverage`` / ``ruled_out_json``)
+            satisfies the structured-exit contract.
     """
     inner = _ctx(ctx)
     coordinator = coordinator_from_context(inner)
@@ -760,6 +904,15 @@ async def agent_finish(
             ensure_ascii=False,
             default=str,
         )
+
+    from Ben.agents.profiles import (
+        get_profile,
+        has_structured_exit,
+        mark_structured_exit,
+    )
+
+    profile_name = inner.get("agent_profile")
+    spec = get_profile(profile_name if isinstance(profile_name, str) else None)
 
     ruled_out_recorded: list[str] = []
     ruled_out_items: list[Any] = []
@@ -801,6 +954,106 @@ async def agent_finish(
             )
             if result.get("success") and result.get("entry_id"):
                 ruled_out_recorded.append(str(result["entry_id"]))
+                mark_structured_exit(inner, source="ruled_out_json")
+
+    result_payload: dict[str, Any] | None = None
+    if result_json and str(result_json).strip():
+        try:
+            parsed_result = json.loads(result_json)
+        except json.JSONDecodeError as exc:
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": f"result_json must be valid JSON: {exc}",
+                    "agent_completed": False,
+                },
+                ensure_ascii=False,
+                default=str,
+            )
+        if not isinstance(parsed_result, dict):
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": "result_json must be a JSON object",
+                    "agent_completed": False,
+                },
+                ensure_ascii=False,
+                default=str,
+            )
+        result_payload = parsed_result
+        # 把 ports/paths 落成 fact（结构化出口）。
+        from Ben.core.task_graph import add_fact
+
+        for port in result_payload.get("ports") or []:
+            if isinstance(port, dict):
+                add_fact(
+                    kind="service",
+                    title=str(port.get("title") or f"port {port.get('port')}"),
+                    data=port,
+                    creator=me if isinstance(me, str) else None,
+                    derive_intent=True,
+                )
+            elif port is not None:
+                add_fact(
+                    kind="service",
+                    title=f"port {port}",
+                    data={"port": str(port)},
+                    creator=me if isinstance(me, str) else None,
+                    derive_intent=True,
+                )
+        for path in result_payload.get("paths") or []:
+            if isinstance(path, dict):
+                add_fact(
+                    kind="dir",
+                    title=str(path.get("title") or path.get("url") or path),
+                    data=path,
+                    creator=me if isinstance(me, str) else None,
+                    derive_intent=True,
+                )
+            elif path is not None:
+                add_fact(
+                    kind="dir",
+                    title=str(path),
+                    data={"url": str(path)},
+                    creator=me if isinstance(me, str) else None,
+                    derive_intent=True,
+                )
+        mark_structured_exit(inner, source="result_json")
+
+    if spec.requires_structured_exit and not has_structured_exit(inner):
+        refusals = int(inner.get("structured_exit_refusals") or 0) + 1
+        inner["structured_exit_refusals"] = refusals
+        return json.dumps(
+            {
+                "success": False,
+                "agent_completed": False,
+                "error": (
+                    f"profile={spec.name} requires a structured exit before "
+                    "agent_finish: call record_fact / record_coverage, or pass "
+                    "result_json / ruled_out_json. "
+                    f"(refusal {refusals}/3)"
+                ),
+                "refusals": refusals,
+            },
+            ensure_ascii=False,
+            default=str,
+        )
+
+    # 结论 intent（主 + 合批），须在 set_status(completed) 触发 reaper 之前完成。
+    intent_ids_to_close: list[str] = []
+    intent_ref = inner.get("intent_id")
+    if isinstance(intent_ref, str) and intent_ref.strip():
+        intent_ids_to_close.append(intent_ref.strip())
+    batch_ref = inner.get("batch_intent_ids") or []
+    if isinstance(batch_ref, (list, tuple)):
+        for iid in batch_ref:
+            if isinstance(iid, str) and iid.strip() and iid.strip() not in intent_ids_to_close:
+                intent_ids_to_close.append(iid.strip())
+    if intent_ids_to_close:
+        with contextlib.suppress(Exception):
+            from Ben.core.task_graph import conclude_intents
+
+            conclude_intents(intent_ids_to_close, status="done")
 
     filed_reports = _filed_reports_by(me)
     filed_report_ids = [str(r.get("id")) for r in filed_reports]

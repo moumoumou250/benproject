@@ -22,6 +22,9 @@ from Ben.core.frontier import (
 @pytest.fixture(autouse=True)
 def _reset_frontier_sigs() -> None:
     clear_frontier_signatures()
+    from Ben.core.task_graph import reset_task_graph
+
+    reset_task_graph()
 
 
 def test_render_excluded_coverage_brief_lists_closed_rows() -> None:

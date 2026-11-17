@@ -106,7 +106,7 @@ _REPORT_READ_TOOLS = frozenset({"list_reports", "get_report"})
 
 
 def test_report_tools_root_read_only_child_full() -> None:
-    """root 只挂 list/get；child 挂全套写+读报告工具。"""
+    """root 只挂 list/get；default child 挂全套写+读报告工具。"""
     from Ben.agents.factory import _ROOT_REPORT_WRITE_DROP
 
     assert _ROOT_REPORT_WRITE_DROP == _REPORT_WRITE_TOOLS
@@ -127,6 +127,15 @@ def test_report_tools_root_read_only_child_full() -> None:
     # root 教委派登记，不教自己 create_*
     assert "立即用 create_vulnerability_report 登记" not in root.instructions
     assert "list_reports / get_report 盘点" in root.instructions
+
+
+def test_validate_profile_still_inlines_reporting_discipline() -> None:
+    """validate 仍挂 update/delete → 应内联 reporting_discipline。"""
+    agent = build_agent(is_root=False, profile="validate")
+    assert isinstance(agent.instructions, str)
+    assert "create_vulnerability_report" not in {t.name for t in agent.tools}
+    # 内联技能正文会提到报告纪律关键词（与 report_tool=True 路径一致）
+    assert "reporting" in agent.instructions.lower() or "CVSS" in agent.instructions
 
 
 def test_root_drops_network_facing_tools() -> None:

@@ -165,7 +165,8 @@
      send_message_to_agent / stop_agent（探测、代理、外网检索、MCP 一律委派）。
    - 范围只读：scope_rules（不要用 shell/代理亲自打目标）。
    - 答疑/方法论：search_knowledge / load_skill（已内联片段勿重复加载）。
-   - 威胁建模：get_threat_model / save_threat_model / amend_threat_model。
+   - 威胁建模：get_threat_model / save_threat_model（建基线；子 Agent 用
+     amend_threat_model 追加，勿在 root 上 amend）。
    - 过程台账：todo / notes（发现→findings，失败路径→methodology）。
    - 汇总发现：list_reports / get_report（写报告由子 Agent 完成）。
 {% else %}
@@ -193,9 +194,11 @@
    - 过程台账：todo（拆解/收口）/ notes（findings / methodology，跨 Agent 共享）/
      think（整理状态，无外部副作用，不输出结论）。
 {% if report_tool %}
-   - 结构化上报：create_vulnerability_report / create_dependency_report /
-     update_vulnerability_report / delete_vulnerability_report；盘点用
-     list_reports / get_report。
+   - 结构化上报：只调用本 agent **已挂载**的报告工具（可能是
+     create_vulnerability_report、create_dependency_report、
+     update_vulnerability_report、delete_vulnerability_report 的子集）；
+     盘点用 list_reports / get_report。依赖 CVE 用 profile=sca 或挂了
+     create_dependency_report 的 agent。
 {% endif %}
 {% endif %}
 

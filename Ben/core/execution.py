@@ -514,6 +514,8 @@ async def spawn_child_agent(
     surface: str | None = None,
     risk_area: str | None = None,
     tier: str | None = "hunter",
+    profile: str | None = None,
+    intent_id: str | None = None,
     event_sink: StreamEventSink | None = None,
     hooks: RunHooks[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
@@ -521,9 +523,34 @@ async def spawn_child_agent(
     if not isinstance(parent_id, str):
         raise TypeError("Parent agent_id missing from context")
 
+    from Ben.agents.profiles import get_profile, normalize_profile, render_ephemeral_task
+
     resolved_tier = _normalize_tier(tier)
     surface_s = (surface or "").strip()
     risk_s = (risk_area or "").strip()
+    profile_key = normalize_profile(profile)
+    intent_s = (intent_id or "").strip() or None
+
+    # intent_id → 从 task_graph 取 profile / surface / 任务简报（可覆盖显式参数）。
+    # 认领推迟到 child_id 分配之后，避免 pending worker 占位。
+    if intent_s:
+        from Ben.core.task_graph import get_intent
+
+        intent = get_intent(intent_s)
+        if intent is None:
+            raise RuntimeError(f"unknown intent_id {intent_s}")
+        if intent.get("status") not in {"open", "claimed"}:
+            raise RuntimeError(
+                f"intent {intent_s} status={intent.get('status')}; expected open"
+            )
+        if profile_key is None and intent.get("profile"):
+            profile_key = normalize_profile(str(intent.get("profile")))
+        if not surface_s and intent.get("surface"):
+            surface_s = str(intent.get("surface")).strip()
+        if not risk_s and intent.get("risk_area"):
+            risk_s = str(intent.get("risk_area")).strip()
+        if not (task or "").strip():
+            task = str(intent.get("description") or intent.get("title") or "")
 
     # 残局：剩余 <20% 时禁止新 surface；validator / 续领已有 claim 放行。
     from Ben.core.scan_clock import is_deadline_passed, is_endgame
@@ -608,7 +635,8 @@ async def spawn_child_agent(
     # recall：把相似历史拼进 task（保守、本地字符串）。
     from Ben.core.recall import augment_task_with_recall
 
-    task_augmented = augment_task_with_recall(task)
+    task_for_child = render_ephemeral_task(profile_key, task)
+    task_augmented = augment_task_with_recall(task_for_child)
 
     # 模型档位：general → RunConfig 旗舰（model_name=None）；其余 → flash 闭包默认。
     import inspect
@@ -617,6 +645,8 @@ async def spawn_child_agent(
     if resolved_tier == "general":
         factory_kwargs["model_name"] = None
         factory_kwargs["use_root_capabilities"] = True
+    if profile_key is not None:
+        factory_kwargs["profile"] = profile_key
     params = inspect.signature(factory).parameters
     if "model_name" not in params:
         if "model_name" in factory_kwargs or "use_root_capabilities" in factory_kwargs:
@@ -625,6 +655,15 @@ async def spawn_child_agent(
             )
         factory_kwargs.pop("model_name", None)
         factory_kwargs.pop("use_root_capabilities", None)
+    if "profile" not in params:
+        factory_kwargs.pop("profile", None)
+
+    # profile.max_turns 可收紧本 child 的回合上限（不抬高全局 max_turns）。
+    child_max_turns = max_turns
+    if profile_key is not None:
+        spec = get_profile(profile_key)
+        if spec.max_turns is not None:
+            child_max_turns = min(max_turns, spec.max_turns)
 
     registered = False
     try:
@@ -647,14 +686,47 @@ async def spawn_child_agent(
                 meta["surface"] = surface_s
             if risk_s:
                 meta["risk_area"] = risk_s
+            if profile_key:
+                meta["profile"] = profile_key
+            if intent_s:
+                meta["intent_id"] = intent_s
         else:
             coordinator.metadata = {
                 child_id: {
                     "tier": resolved_tier,
                     **({"surface": surface_s} if surface_s else {}),
                     **({"risk_area": risk_s} if risk_s else {}),
+                    **({"profile": profile_key} if profile_key else {}),
+                    **({"intent_id": intent_s} if intent_s else {}),
                 }
             }
+
+        batch_intent_ids: list[str] = []
+        if intent_s:
+            from Ben.agents.profiles import get_profile as _get_profile
+            from Ben.core.task_graph import claim_intent, claim_sibling_batch
+
+            claim = claim_intent(intent_s, worker=child_id)
+            if not claim.get("success"):
+                # 已被他人 claimed：仍允许同 worker 重入；否则失败。
+                existing = claim.get("intent") or {}
+                if existing.get("worker") != child_id:
+                    raise RuntimeError(str(claim.get("error") or "intent claim failed"))
+            # 合批：同父同 profile 兄弟一并 claim，finish/reaper 成对收口。
+            spec_for_batch = _get_profile(profile_key)
+            if spec_for_batch.batch_ok:
+                batch_intent_ids = claim_sibling_batch(
+                    intent_s, child_id, limit=5
+                )
+            else:
+                batch_intent_ids = [intent_s]
+            if isinstance(meta_map, dict):
+                meta = meta_map.setdefault(child_id, {})
+                meta["batch_intent_ids"] = list(batch_intent_ids)
+            elif isinstance(getattr(coordinator, "metadata", None), dict):
+                coordinator.metadata.setdefault(child_id, {})[
+                    "batch_intent_ids"
+                ] = list(batch_intent_ids)
 
         await _start_child_runner(
             parent_ctx=parent_ctx,
@@ -662,7 +734,7 @@ async def spawn_child_agent(
             agents_db_path=agents_db_path,
             sessions_to_close=sessions_to_close,
             run_config=run_config,
-            max_turns=max_turns,
+            max_turns=child_max_turns,
             interactive=interactive,
             child_agent=child_agent,
             child_id=child_id,
@@ -680,6 +752,9 @@ async def spawn_child_agent(
             minutes=child_minutes,
             event_sink=event_sink,
             hooks=hooks,
+            profile=profile_key,
+            intent_id=intent_s,
+            batch_intent_ids=tuple(batch_intent_ids),
         )
     except BaseException:
         # H7：claim 在 register 之前；失败必须直接 release，不能依赖 set_status。
@@ -687,6 +762,11 @@ async def spawn_child_agent(
             from Ben.core.task_claims import release_for_agent
 
             release_for_agent(child_id)
+        if intent_s:
+            with contextlib.suppress(Exception):
+                from Ben.core.task_graph import release_intents_for_agent
+
+                release_intents_for_agent(child_id)
         if registered:
             with contextlib.suppress(Exception):
                 await coordinator.set_status(
@@ -697,6 +777,8 @@ async def spawn_child_agent(
     message = (
         f"Spawned '{name}' ({child_id}) tier={resolved_tier} running in parallel."
     )
+    if profile_key:
+        message += f" profile={profile_key}."
     if child_minutes is not None:
         message += f" Time box: {child_minutes:g} minute(s)."
     return {
@@ -708,6 +790,8 @@ async def spawn_child_agent(
         "tier": resolved_tier,
         "surface": surface_s or None,
         "risk_area": risk_s or None,
+        "profile": profile_key,
+        "intent_id": intent_s,
         "message": message,
     }
 
@@ -1514,6 +1598,9 @@ async def _start_child_runner(
     minutes: float | None = None,
     event_sink: StreamEventSink | None = None,
     hooks: RunHooks[dict[str, Any]] | None = None,
+    profile: str | None = None,
+    intent_id: str | None = None,
+    batch_intent_ids: tuple[str, ...] = (),
 ) -> None:
     session = open_agent_session(child_id, agents_db_path)
     sessions_to_close.append(session)
@@ -1523,12 +1610,21 @@ async def _start_child_runner(
     child_ctx["agent_id"] = child_id
     child_ctx["parent_id"] = parent_id
     child_ctx["task"] = task
+    if profile:
+        child_ctx["agent_profile"] = profile
+    if intent_id:
+        child_ctx["intent_id"] = intent_id
+    if batch_intent_ids:
+        child_ctx["batch_intent_ids"] = list(batch_intent_ids)
     child_ctx[TURN_LIMIT_KEY] = skill_turn_limit(
         skills, parent_ctx.get(SUBAGENT_TURN_LIMITS_KEY) or {}
     )
     # 子 agent 的 system prompt 内联集与父不同；按 child 参数重算，供 load_skill 去重。
     from Ben.agents.prompt import resolve_inlined_skills
+    from Ben.agents.profiles import get_profile
 
+    spec = get_profile(profile)
+    report_tool = spec.tool_names is None
     child_ctx["inlined_skills"] = set(
         resolve_inlined_skills(
             skills,
@@ -1536,7 +1632,7 @@ async def _start_child_runner(
             is_root=False,
             is_whitebox=bool(parent_ctx.get("is_whitebox", False)),
             is_diff_scoped=bool(parent_ctx.get("is_diff_scoped", False)),
-            report_tool=True,
+            report_tool=report_tool,
             coverage_tools=bool(parent_ctx.get("coverage_tools", True)),
         )
     )
@@ -1593,6 +1689,14 @@ async def _start_child_runner(
                     await timer
             if not coordinator.is_shutting_down:
                 await _notify_parent_on_exit(coordinator, child_id)
+            # ephemeral：finish 后立即关 session（图节点保留作审计）。
+            # interactive resume 仍可能读 agents.db 行，但连接可关；teardown
+            # 对已 close 的 session 再 close 是幂等的。
+            if not interactive:
+                with contextlib.suppress(Exception):
+                    session.close()
+                with contextlib.suppress(ValueError, AttributeError):
+                    sessions_to_close.remove(session)
 
     task_handle = asyncio.create_task(_child_loop(), name=f"agent-{name}-{child_id}")
     await coordinator.attach_runtime(child_id, task=task_handle)

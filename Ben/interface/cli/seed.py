@@ -368,7 +368,11 @@ def apply_seed_to_prepared(
     workspace_files: list[dict[str, Any]],
     bundle: SeedBundle,
 ) -> tuple[str, list[dict[str, Any]]]:
-    """把 brief 拼进 instruction，并把 facts JSON 挂进 workspace_files（content 形态）。"""
+    """把 brief 拼进 instruction，并把 facts JSON 挂进 workspace_files（content 形态）。
+
+    同时把 SeedFact 落入 task_graph（depth-0），并只派生 recon/enum intent，
+    实现「初始阶段少挂载」。
+    """
     brief = render_seed_brief(bundle)
     merged_instruction = f"{brief}\n\n{instruction}" if instruction else brief
     payload = json.dumps(bundle.to_payload(), ensure_ascii=False, indent=2).encode("utf-8")
@@ -376,4 +380,17 @@ def apply_seed_to_prepared(
     # 去掉同路径旧条目，保证幂等。
     kept = [entry for entry in workspace_files if entry.get("workspace_path") != path]
     kept.append({"workspace_path": path, "content": payload})
+
+    # 实际灌图在 runner hydrate_task_graph 之后（见 runner.py）；此处只给 root 提示。
+    if bundle.facts:
+        hint = (
+            "\n\n## DFS intents from seed (recon/enum only)\n"
+            "Seed facts will be loaded into the task graph at scan start with "
+            "profile `recon` or `enum` only. Prefer "
+            "`create_agent(..., intent_id=..., profile=...)` for the next "
+            "deepest ready intent rather than spawning a full-toolkit hunter "
+            "for rediscovery.\n"
+        )
+        merged_instruction = f"{merged_instruction}{hint}"
+
     return merged_instruction, kept

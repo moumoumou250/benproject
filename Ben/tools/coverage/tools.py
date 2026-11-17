@@ -458,6 +458,13 @@ async def record_coverage(
         agent_id=agent_id,
         agent_name=agent_name,
     )
+    if result.get("success"):
+        from Ben.agents.profiles import mark_structured_exit
+
+        mark_structured_exit(
+            ctx.context if isinstance(ctx.context, dict) else None,
+            source="record_coverage",
+        )
     return json.dumps(result, ensure_ascii=False, default=str)
 
 

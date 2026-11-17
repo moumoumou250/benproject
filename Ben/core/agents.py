@@ -396,6 +396,34 @@ class AgentCoordinator:
                     )
             except Exception:  # noqa: BLE001
                 logger.exception("task claim release failed for %s", agent_id)
+            # intent reaper：未走 agent_finish conclude 的 claimed 放回 open。
+            # completed 且已 conclude 的 intent 状态为 done，reopen 不会动它们。
+            try:
+                from Ben.core.task_graph import release_intents_for_agent
+
+                meta = self.metadata.get(agent_id) or {}
+                intent_ids: list[str] = []
+                primary = meta.get("intent_id")
+                if isinstance(primary, str) and primary.strip():
+                    intent_ids.append(primary.strip())
+                batch = meta.get("batch_intent_ids") or []
+                if isinstance(batch, (list, tuple)):
+                    for iid in batch:
+                        if isinstance(iid, str) and iid.strip() and iid.strip() not in intent_ids:
+                            intent_ids.append(iid.strip())
+                reopened = release_intents_for_agent(
+                    agent_id,
+                    intent_ids=intent_ids or None,
+                )
+                if reopened:
+                    logger.info(
+                        "agent.status %s reopened %d intent(s): %s",
+                        agent_id,
+                        len(reopened),
+                        reopened,
+                    )
+            except Exception:  # noqa: BLE001
+                logger.exception("task_graph intent reaper failed for %s", agent_id)
         await self._maybe_snapshot()
 
     def _set_status_locked(

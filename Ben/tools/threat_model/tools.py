@@ -481,28 +481,19 @@ def _scan_targets(ctx: RunContextWrapper) -> list[str]:
 async def get_threat_model(ctx: RunContextWrapper, target: str) -> str:
     """Read this scan's threat model for a target, if an agent has derived one.
 
-    The threat model is this run's shared answer to who the attacker
-    is, where the trust boundaries sit, and what counts as critical
-    here. Call it before you start hunting so you inherit the shared
-    view instead of re-deriving it, and so every agent on this run
-    agrees on what "attacker-controlled" means.
+    The model is this run's shared answer to who the attacker is, where the
+    trust boundaries sit, and what counts as critical here. Call it before
+    you start hunting so you inherit that view instead of re-deriving it.
 
-    It is scoped to this scan and nothing is carried over from an
-    earlier run, so an empty result means no agent has derived one yet.
+    Scoped to this run — nothing carries over from an earlier scan. Works
+    black-box or white-box: the target can be a host, URL, API base or
+    repository path; equivalent spellings of one host resolve to the same
+    model, and a checkout resolves to its remote.
 
-    Works black-box or white-box. The target can be a host, a URL, an
-    API base, or a repository path; equivalent spellings of the same
-    host resolve to the same model, and a checkout resolves to its
-    remote, so a model derived white-box by one agent is read back by
-    another testing the deployment.
-
-    Returns ``found: false`` when nothing has been derived yet — derive
-    one and share it with ``save_threat_model``.
-
-    Any ``amendments`` in the response are corrections other agents
-    recorded after the base model was written. They are part of the
-    model — read them, and prefer the later statement where one
-    contradicts the base text.
+    ``found: false`` means nothing has been derived yet. Any
+    ``amendments`` in the response are corrections recorded after the base
+    model — they are part of the model, so read them and prefer the later
+    statement where one contradicts the base text.
 
     Args:
         target: What the model describes — a host or URL
@@ -520,57 +511,38 @@ async def get_threat_model(ctx: RunContextWrapper, target: str) -> str:
 @function_tool(timeout=30)
 async def save_threat_model(ctx: RunContextWrapper, target: str, content: str) -> str:
     """Share a target-scoped threat model with the other agents on this scan.
+    Scoped to this run; a later scan starts without it.
 
-    The model lives for this run only — it is not written to disk and a
-    later scan of the same host or tree starts without it.
+    **Replaces the whole document and clears any amendments.** Use it to
+    establish the baseline (normally root, before subagents start), or to
+    fold accumulated amendments back into the body. If a model exists and
+    you only need to correct or extend part of it, call
+    ``amend_threat_model`` instead — saving over it silently discards what
+    other agents added.
 
-    **This replaces the whole document, and clears any amendments** —
-    it is for the agent establishing the baseline (normally root,
-    before subagents start), or for folding accumulated amendments back
-    into the body. If a model already exists and you only need to
-    correct or extend part of it, call ``amend_threat_model`` instead;
-    saving over it will silently discard whatever other agents added.
+    Write it from the evidence you have. White-box: name the files,
+    entrypoints and controls behind each claim. Black-box: ground it in
+    recon — answered hosts and ports, fingerprints, roles and tenants, the
+    auth and session model, enumerated endpoints — and say which claims are
+    inferred rather than observed. Scope it to the target, not your slice
+    of it: do not centre it on the diff you were handed or the one host
+    that answered first, and in a monorepo do not let ``tests/`` or one-off
+    scripts become the centre of gravity unless the code shows they are
+    deployed.
 
-    **Write it from whatever evidence you have.** With source, ground
-    it in the code and name the files, entrypoints, and controls that
-    make each claim true. Black-box, ground it in recon: the hosts and
-    ports that answered, the technology fingerprints, the observed
-    roles and tenants, the authentication and session model, the
-    endpoints and parameters you enumerated. A black-box model is
-    necessarily provisional — say which parts are inferred rather than
-    observed, and let later agents amend it as the picture fills in.
+    Markdown, these four sections required:
 
-    **Scope it to the target, not to your slice of it.** Do not centre
-    it on the diff you were handed, the subsystem you were assigned, or
-    the one host that happened to answer first. With source, distinguish
-    real product and runtime surfaces from test, docs, example, and
-    developer-tooling paths — in a monorepo, do not let ``tests/`` or
-    one-off scripts become the centre of gravity unless the code shows
-    they are genuinely deployed. Where the target documents its own
-    boundary — an ``AGENTS`` file, a specific ``SECURITY.md``, a
-    published API spec, an engagement scope — build on it rather than
-    inventing a competing story.
-
-    Structure the content in Markdown with these sections:
-
-    - **Overview** — what the target actually is, its real-world usage,
-      and which parts are product/runtime versus tooling or
-      non-production.
-    - **Trust Boundaries and Assumptions** — the boundaries, the actors
-      on either side, and the invariants that must hold. Separate
-      attacker-controlled, operator-controlled, and
-      developer-controlled inputs explicitly. Black-box, this is the
-      role, tenant, and privilege model: who can reach what before
-      authenticating, as a low-privilege user, and across tenants.
-    - **Attack Surface and Attacker Stories** — the exposed surfaces
-      (hosts, endpoints, parameters, integrations, or the code-level
-      entrypoints and sinks), the mitigations already present that
-      materially change severity or reach, realistic attacker stories,
-      and the stories that are *not* realistic here and why.
-    - **Severity Calibration** — what critical / high / medium / low
-      look like for *this* target, with a concrete example at each
-      level. Where a vulnerability class needs attacker control that
-      does not exist in real usage, say so here.
+    - **Overview** — what the target is; product/runtime versus tooling.
+    - **Trust Boundaries and Assumptions** — boundaries, the actors on
+      either side, the invariants. Separate attacker-, operator- and
+      developer-controlled input. Black-box, this is the role/tenant
+      privilege model: what is reachable unauthenticated, as a low-privilege
+      user, and across tenants.
+    - **Attack Surface and Attacker Stories** — exposed surfaces, existing
+      mitigations that change severity, realistic stories, and which
+      stories are not realistic here and why.
+    - **Severity Calibration** — what critical / high / medium / low look
+      like for *this* target, with a concrete example at each level.
 
     Args:
         target: What the model describes — a host or URL
@@ -592,34 +564,21 @@ async def save_threat_model(ctx: RunContextWrapper, target: str, content: str) -
 async def amend_threat_model(ctx: RunContextWrapper, target: str, addendum: str) -> str:
     """Correct or extend the existing threat model without replacing it.
 
-    The baseline is written before anyone starts hunting, so it is
-    written with the least information anyone will ever have. That is
-    doubly true black-box, where the model starts as inference over
-    recon output and only becomes real as agents authenticate, map
-    roles, and reach the surfaces behind them. When your work
-    contradicts the model or fills in something it missed, record that
-    here — every agent that calls ``get_threat_model`` afterwards sees
-    your addendum next to the base model.
+    The baseline is written before anyone starts hunting, so it holds the
+    least information anyone will ever have. When your work contradicts it
+    or fills in something it missed, record that here: every agent that
+    calls ``get_threat_model`` afterwards sees your addendum next to the
+    base text. Amendments are append-only and attributed, so concurrent
+    amendments both survive — that is the difference from
+    ``save_threat_model``, which overwrites the document and drops them.
 
-    Amendments are append-only and attributed, so two agents amending
-    at once both survive. That is the difference from
-    ``save_threat_model``, which overwrites the document and drops
-    every amendment on it.
+    Worth amending: a boundary the model calls trusted that you found
+    attacker-reachable (or the reverse); a host, endpoint, parameter, role,
+    sink or shared control it omits; something it only inferred that you
+    have now observed, or that turned out false; a severity call that is
+    wrong for this target, with the reason.
 
-    Worth amending:
-
-    - A boundary the model calls trusted that you found is
-      attacker-reachable, or vice versa.
-    - A host, endpoint, parameter, role, sink, or shared control the
-      model does not mention.
-    - Something the model only inferred that you have now observed — or
-      that turned out not to be true.
-    - A severity call the model got wrong for this target, with the
-      reason.
-    - An assumption you disproved — the model says input is validated
-      upstream and you found the path that skips it.
-
-    Not worth amending: individual findings (those are reports), or
+    Not worth amending: individual findings (those are reports) or
     restating what the model already says.
 
     Args:

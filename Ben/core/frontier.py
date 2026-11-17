@@ -259,20 +259,64 @@ def render_frontier_block(
             continue
         ready.append(gap)
 
-    ready_lines = ["## Ready (unclaimed needs_follow_up)"]
-    if ready:
-        for gap in ready[:_MAX_READY_ROWS]:
-            surface = clip_line(str(gap.get("surface") or "?"), 40)
-            risk = clip_line(str(gap.get("risk_area") or "?"), 30)
-            ready_lines.append(f"- {surface} · {risk}")
-            ready_lines.append(
-                _suggest_line(str(gap.get("surface") or ""), str(gap.get("risk_area") or ""))
-            )
-        omitted = len(ready) - _MAX_READY_ROWS
-        if omitted > 0:
-            ready_lines.append(f"- … {omitted} more Ready; call list_coverage")
+    # DFS Next：task_graph 的 ready intents（不认领，只提示）。有内容时 Ready 降级。
+    dfs_lines = ["## Next (DFS order)"]
+    dfs_ready: list[dict[str, Any]] = []
+    try:
+        from Ben.core.task_graph import peek_ready, snapshot_counts
+
+        dfs_ready = peek_ready(limit=_MAX_READY_ROWS)
+        counts = snapshot_counts()
+        if dfs_ready:
+            for intent in dfs_ready:
+                iid = clip_line(str(intent.get("id") or "?"), 12)
+                depth = intent.get("depth", 0)
+                profile = clip_line(str(intent.get("profile") or "?"), 12)
+                title = clip_line(str(intent.get("title") or "?"), 50)
+                dfs_lines.append(
+                    f"- {iid} · depth={depth} · profile={profile} · {title}"
+                )
+                dfs_lines.append(
+                    "  suggest: "
+                    f'create_agent(name={title!r}, task=..., intent_id={iid!r}, '
+                    f"profile={profile!r}, tier=\"scout\")"
+                )
+            omitted = max(0, int(counts.get("open") or 0) - len(dfs_ready))
+            if omitted > 0:
+                dfs_lines.append(f"- … {omitted} more open intents")
+        else:
+            dfs_lines.append("- (none)")
+    except Exception:  # noqa: BLE001
+        logger.debug("frontier: task_graph peek failed", exc_info=True)
+        dfs_lines.append("- (unavailable)")
+
+    if dfs_ready:
+        # DFS 非空：折叠 Ready，避免双建议源竞争。
+        ready_lines = [
+            "## Ready (unclaimed needs_follow_up)",
+            (
+                f"- Ready: {len(ready)} coverage gap(s) deferred; follow DFS Next "
+                "(create_agent with intent_id / profile=recon|enum)."
+            ),
+        ]
     else:
-        ready_lines.append("- (none)")
+        ready_lines = ["## Ready (unclaimed needs_follow_up)"]
+        if ready:
+            for gap in ready[:_MAX_READY_ROWS]:
+                surface = clip_line(str(gap.get("surface") or "?"), 40)
+                risk = clip_line(str(gap.get("risk_area") or "?"), 30)
+                ready_lines.append(f"- {surface} · {risk}")
+                ready_lines.append(
+                    _suggest_line(
+                        str(gap.get("surface") or ""),
+                        str(gap.get("risk_area") or ""),
+                    )
+                )
+            omitted = len(ready) - _MAX_READY_ROWS
+            if omitted > 0:
+                ready_lines.append(f"- … {omitted} more Ready; call list_coverage")
+        else:
+            ready_lines.append("- (none)")
 
     claimed_lines = ["## Claimed"]
     if claims:
@@ -329,8 +373,16 @@ def render_frontier_block(
     else:
         agent_lines.append("- (none)")
 
-    budgets = {"ready": 2400, "claimed": 900, "todo": 1200, "agents": 1200}
+    budgets = {
+        "dfs": 1600,
+        "ready": 1200,
+        "claimed": 800,
+        "todo": 1000,
+        "agents": 1000,
+    }
+    # DFS 置顶；Ready 仅在无 DFS intent 时展开（有 DFS 时已折叠为计数行）。
     sections = [
+        _clip_section(dfs_lines, budgets["dfs"], more_hint="check task_graph intents"),
         _clip_section(ready_lines, budgets["ready"], more_hint="call list_coverage"),
         _clip_section(claimed_lines, budgets["claimed"], more_hint="call list_claims"),
         counts_lines,

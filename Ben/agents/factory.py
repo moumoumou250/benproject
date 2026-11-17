@@ -45,6 +45,15 @@ from agents.sandbox.session.pty_types import PTY_YIELD_TIME_MS_MAX
 from agents.tool import CustomTool, FunctionTool, Tool
 from pydantic import ValidationError
 
+from Ben.agents.profiles import (
+    REPORT_WRITE_TOOL_NAMES,
+    CachedToolkit,
+    ProfileSpec,
+    check_profile_shell_allow,
+    get_profile,
+    get_toolkit_cache,
+    normalize_profile,
+)
 from Ben.agents.prompt import render_system_prompt
 from Ben.config import load_settings
 from Ben.config.tool_call_arguments import describe_malformed_arguments
@@ -57,6 +66,7 @@ from Ben.tools.agents_graph.tools import (
     wait_for_agents,
 )
 from Ben.tools.coverage.tools import list_coverage, record_coverage, update_coverage
+from Ben.tools.facts.tools import list_facts, record_fact
 from Ben.tools.finish.tool import finish_scan
 from Ben.tools.load_skill.tool import load_skill
 from Ben.rag.tools import search_knowledge
@@ -821,8 +831,13 @@ async def _run_one_shot_shell(tool: Any, parsed: dict[str, Any]) -> str | None:
     )
 
 
-def _wrap_exec_command(tool: FunctionTool, *, allowed_targets: tuple[str, ...]) -> FunctionTool:
-    """对齐 strix _wrap_exec_command；前置 Ben 的授权白名单校验。"""
+def _wrap_exec_command(
+    tool: FunctionTool,
+    *,
+    allowed_targets: tuple[str, ...],
+    shell_allow: frozenset[str] | None = None,
+) -> FunctionTool:
+    """对齐 strix _wrap_exec_command；前置 Ben 的授权白名单 + profile shell allow。"""
     invoke_tool = tool.on_invoke_tool
     tool.description = f"{tool.description.rstrip()} {_EXEC_COMMAND_DESCRIPTION_NOTE}"
 
@@ -834,6 +849,13 @@ def _wrap_exec_command(tool: FunctionTool, *, allowed_targets: tuple[str, ...]) 
         if isinstance(parsed, dict):
             cmd = parsed.get("cmd")
             if isinstance(cmd, str):
+                # 双闸门：profile 正向前置（扫描器族）→ 授权白名单/只读。
+                profile_denial = check_profile_shell_allow(cmd, shell_allow)
+                if profile_denial:
+                    return json.dumps(
+                        {"ok": False, "error": profile_denial},
+                        ensure_ascii=False,
+                    )
                 denial = _check_command_allowed(cmd, allowed_targets)
                 if denial:
                     return json.dumps(
@@ -884,7 +906,11 @@ def _wrap_write_stdin(tool: FunctionTool) -> FunctionTool:
 
 
 def _configure_shell_tools(
-    toolset: Any, *, allowed_targets: tuple[str, ...], strict_schemas: bool = True
+    toolset: Any,
+    *,
+    allowed_targets: tuple[str, ...],
+    strict_schemas: bool = True,
+    shell_allow: frozenset[str] | None = None,
 ) -> None:
     """对齐 strix _configure_shell_tools：逐个包装 SDK 生成的 shell 工具。
 
@@ -895,7 +921,9 @@ def _configure_shell_tools(
             continue
         wrapped = _with_strictness(_with_coerced_arguments(tool), strict_schemas)
         if tool.name == "exec_command":
-            wrapped = _wrap_exec_command(wrapped, allowed_targets=allowed_targets)
+            wrapped = _wrap_exec_command(
+                wrapped, allowed_targets=allowed_targets, shell_allow=shell_allow
+            )
         elif tool.name == "write_stdin":
             wrapped = _wrap_write_stdin(wrapped)
         wrapped = _function_tool_with_error_result(wrapped)
@@ -1095,6 +1123,18 @@ _ROOT_REPORT_WRITE_DROP: frozenset[str] = frozenset(
         "delete_vulnerability_report",
     }
 )
+# root 建基线用 save；amend 留给执行类子 Agent（T1）。
+_ROOT_THREAT_AMEND_DROP: frozenset[str] = frozenset({"amend_threat_model"})
+
+# profile 专用工具（不进默认 _BASE_TOOLS，避免改动全量 child 工具面回归）。
+_PROFILE_TOOL_CATALOG: dict[str, Tool] = {
+    "record_fact": record_fact,
+    "list_facts": list_facts,
+}
+
+# shell capability 工具名（不在 _BASE_TOOLS 里，由 _make_shell_tools 生成）。
+_SHELL_TOOL_NAMES: frozenset[str] = frozenset({"exec_command", "write_stdin"})
+_FILESYSTEM_TOOL_NAMES: frozenset[str] = frozenset({"apply_patch", "view_image"})
 
 
 # 运行时后端注册的额外工具（对齐 strix：在首次 build_agent 前注册，
@@ -1143,6 +1183,7 @@ def _make_shell_tools(
     allowed_targets: tuple[str, ...],
     *,
     strict_schemas: bool = True,
+    shell_allow: frozenset[str] | None = None,
 ) -> list[Tool]:
     """从 SDK Shell capability 生成绑定到 live session 的 shell 工具。
 
@@ -1151,7 +1192,10 @@ def _make_shell_tools(
     """
     shell = Shell(
         configure_tools=lambda toolset: _configure_shell_tools(
-            toolset, allowed_targets=allowed_targets, strict_schemas=strict_schemas
+            toolset,
+            allowed_targets=allowed_targets,
+            strict_schemas=strict_schemas,
+            shell_allow=shell_allow,
         )
     )
     shell.bind(sandbox_session)
@@ -1179,6 +1223,168 @@ def _make_filesystem_tools(
     return filesystem.tools()
 
 
+def _tools_by_name(tools: Sequence[Tool]) -> dict[str, Tool]:
+    return {t.name: t for t in tools}
+
+
+def _resolve_named_tools(
+    names: frozenset[str],
+    *,
+    base_tools: Sequence[Tool],
+    include_finish: bool = True,
+) -> list[Tool]:
+    """按 profile.tool_names 从 base + catalog 解析；shell/fs 名跳过（capability 另挂）。
+
+    ``agent_finish`` 始终置于末尾，对齐全量 child 的生命周期工具位置约定。
+    """
+    catalog = _tools_by_name([*base_tools, *(_PROFILE_TOOL_CATALOG.values())])
+    if include_finish:
+        catalog["agent_finish"] = agent_finish
+    out: list[Tool] = []
+    seen: set[str] = set()
+    ordered = [n for n in sorted(names) if n != "agent_finish"]
+    if "agent_finish" in names or include_finish:
+        ordered.append("agent_finish")
+    for name in ordered:
+        if name in _SHELL_TOOL_NAMES or name in _FILESYSTEM_TOOL_NAMES:
+            continue
+        tool = catalog.get(name)
+        if tool is None:
+            logger.warning("profile tool %r not in catalog; skipped", name)
+            continue
+        if name in seen:
+            continue
+        seen.add(name)
+        out.append(tool)
+    return out
+
+
+def _compose_agent_tools(
+    *,
+    is_root: bool,
+    profile_name: str | None,
+    coverage_tools: bool,
+    interactive: bool,
+    extra_tools: Sequence[Tool] | None,
+    finish_tool: Tool,
+    sandbox_session: Any,
+    allowed_targets: tuple[str, ...],
+    strict_tool_schemas: bool,
+    supports_images: bool,
+) -> list[Tool]:
+    """组装工具列表；profile 裁剪时走 ToolkitCache 复用已包装面。"""
+    spec = get_profile(profile_name)
+    shell_allow = None if is_root else spec.shell_allow
+    want_filesystem = True if is_root else spec.include_filesystem
+
+    def _build_full() -> list[Tool]:
+        agent_tools = [*_EXTRA_TOOLS, *(extra_tools or [])]
+        if interactive:
+            agent_tools.append(wait_for_user)
+        base_tools = list(_BASE_TOOLS)
+        if not coverage_tools:
+            base_tools = [t for t in base_tools if t not in _COVERAGE_TOOLS]
+            finish = (
+                _without_coverage_step(finish_scan)
+                if finish_tool is finish_scan
+                else finish_tool
+            )
+        else:
+            finish = finish_tool
+
+        if is_root:
+            drop = _ROOT_NETWORK_DROP | _ROOT_REPORT_WRITE_DROP | _ROOT_THREAT_AMEND_DROP
+            base_tools = [t for t in base_tools if t.name not in drop]
+            body: list[Tool] = [*base_tools, verify_finding, *agent_tools, finish]
+        elif spec.tool_names is not None:
+            # 按需面：只挂 profile 点名的工具；生命周期工具固定垫底。
+            names = set(spec.tool_names)
+            names.add("agent_finish")
+            if not coverage_tools:
+                names -= {t.name for t in _COVERAGE_TOOLS}
+            body = _resolve_named_tools(frozenset(names), base_tools=base_tools)
+            finish_tools = [t for t in body if t.name == "agent_finish"]
+            body = [t for t in body if t.name != "agent_finish"]
+            body.extend(agent_tools)
+            body.extend(finish_tools or [agent_finish])
+        else:
+            # 全量 child − profile.tool_drop（R1/T1：报告/威胁按角色减挂）。
+            drop = spec.tool_drop or frozenset()
+            trimmed = [t for t in base_tools if t.name not in drop]
+            body = [*trimmed, *agent_tools, agent_finish]
+
+        tools: list[Tool] = [
+            *_make_shell_tools(
+                sandbox_session,
+                allowed_targets,
+                strict_schemas=strict_tool_schemas,
+                shell_allow=shell_allow,
+            ),
+        ]
+        if want_filesystem:
+            tools.extend(
+                _make_filesystem_tools(
+                    sandbox_session,
+                    strict_schemas=strict_tool_schemas,
+                    supports_images=supports_images,
+                )
+            )
+        # profile 裁剪时：shell 工具若未点名则去掉（recon 需要 exec）。
+        if not is_root and spec.tool_names is not None:
+            shell_wanted = spec.tool_names & _SHELL_TOOL_NAMES
+            if shell_wanted:
+                # capability 总是生成一对；只保留点名的。
+                tools = [
+                    t
+                    for t in tools
+                    if t.name not in _SHELL_TOOL_NAMES or t.name in shell_wanted
+                ]
+            else:
+                tools = [t for t in tools if t.name not in _SHELL_TOOL_NAMES]
+        tools.extend(body)
+        _ensure_unique_tool_names(tools)
+        return [
+            _with_bounded_result(
+                _with_strictness(_with_coerced_arguments(tool), strict_tool_schemas)
+            )
+            if isinstance(tool, FunctionTool)
+            else tool
+            for tool in tools
+        ]
+
+    # ToolkitCache 仅缓存 child + 具名 profile（default/全量不缓存，避免
+    # interactive/extra_tools 差异污染）。
+    cache_key = normalize_profile(profile_name)
+    if (
+        not is_root
+        and cache_key is not None
+        and not extra_tools
+        and not interactive
+    ):
+        cache = get_toolkit_cache()
+
+        def _builder() -> CachedToolkit:
+            built = _build_full()
+            return CachedToolkit(
+                profile=cache_key,
+                tools=built,
+                tool_names=tuple(t.name for t in built),
+            )
+
+        return list(cache.get_or_build(sandbox_session, cache_key, _builder).tools)
+    return _build_full()
+
+
+def _profile_mounts_report_write(*, is_root: bool, spec: ProfileSpec) -> bool:
+    """本 agent 是否挂了任一报告写工具（决定是否内联 reporting_discipline）。"""
+    if is_root:
+        return False
+    if spec.tool_names is not None:
+        return bool(REPORT_WRITE_TOOL_NAMES & spec.tool_names)
+    drop = spec.tool_drop or frozenset()
+    return bool(REPORT_WRITE_TOOL_NAMES - drop)
+
+
 def build_agent(
     *,
     name: str = "agent",
@@ -1200,6 +1406,7 @@ def build_agent(
     coverage_tools: bool = True,
     prompts_dir: Path | None = None,
     model_name: Any = None,
+    profile: str | None = None,
 ) -> Agent[Any]:
     """Build a Ben Agent for either root or child use（对齐 strix build_strix_agent）。
 
@@ -1217,12 +1424,23 @@ def build_agent(
             RunConfig.model；传 ``厂商/模型`` 名或 BenProvider 解析出的 Model
             实例（build_flash_model 的产物）时，SDK 用它替代 run 级模型——
             这是 root 旗舰档 / 子 agent flash 档的实现机制。
+        profile: 子 agent 工具面（``recon`` / ``enum`` / ``exploit`` /
+            ``validate`` / ``sca`` / ``None``）。``None``/``default`` 为全量
+            child 减 ``save_threat_model``；具名 profile 另见 ``tool_drop``。
     """
+    profile_key = None if is_root else normalize_profile(profile)
+    spec = get_profile(profile_key)
+    resolved_skills = list(skills or [])
+    if profile_key and spec.skills and not resolved_skills:
+        resolved_skills = list(spec.skills)
+
     if instructions_override is not None:
         instructions = instructions_override
     else:
+        # 仅当本 agent 实际挂了任一报告写工具时才内联 reporting_discipline。
+        report_tool = _profile_mounts_report_write(is_root=is_root, spec=spec)
         instructions = render_system_prompt(
-            requested_skills=skills,
+            requested_skills=resolved_skills,
             scan_mode=scan_mode,
             is_root=is_root,
             is_whitebox=is_whitebox,
@@ -1231,56 +1449,37 @@ def build_agent(
             parallel_tool_calls=parallel_tool_calls,
             system_prompt_context=system_prompt_context,
             supports_images=supports_images,
-            # root 不挂写报告工具，也不内联 reporting_discipline / 教 create_*。
-            report_tool=not is_root,
+            report_tool=report_tool,
             coverage_tools=coverage_tools,
             prompts_dir=prompts_dir,
         )
 
-    agent_tools = [*_EXTRA_TOOLS, *(extra_tools or [])]
-    if interactive:
-        # 只有附着了用户时，交还控制权才有意义（对齐 strix）。
-        agent_tools.append(wait_for_user)
-    base_tools = list(_BASE_TOOLS)
-    if not coverage_tools:
-        base_tools = [t for t in base_tools if t not in _COVERAGE_TOOLS]
-        if finish_tool is finish_scan:
-            finish_tool = _without_coverage_step(finish_scan)
-    if is_root:
-        # 编排者不背探测/外网/写报告 schema（提示词约束不够硬）。
-        # H6：verify_finding 仅 root 派单；validator 用 record_verify_outcome。
-        drop = _ROOT_NETWORK_DROP | _ROOT_REPORT_WRITE_DROP
-        base_tools = [t for t in base_tools if t.name not in drop]
-        tools: list[Tool] = [*base_tools, verify_finding, *agent_tools, finish_tool]
-    else:
-        tools = [*base_tools, *agent_tools, agent_finish]
-    # shell / filesystem 工具由 SDK capability 绑定 session 生成（Ben 手动
-    # bind），置于最前
-    tools = [
-        *_make_shell_tools(sandbox_session, allowed_targets, strict_schemas=strict_tool_schemas),
-        *_make_filesystem_tools(
-            sandbox_session,
-            strict_schemas=strict_tool_schemas,
-            supports_images=supports_images,
-        ),
-        *tools,
-    ]
-    _ensure_unique_tool_names(tools)
-    tools = [
-        _with_bounded_result(_with_strictness(_with_coerced_arguments(tool), strict_tool_schemas))
-        if isinstance(tool, FunctionTool)
-        else tool
-        for tool in tools
-    ]
+    finish = finish_tool
+    if not coverage_tools and finish_tool is finish_scan:
+        finish = _without_coverage_step(finish_scan)
+
+    tools = _compose_agent_tools(
+        is_root=is_root,
+        profile_name=profile_key,
+        coverage_tools=coverage_tools,
+        interactive=interactive,
+        extra_tools=extra_tools,
+        finish_tool=finish,
+        sandbox_session=sandbox_session,
+        allowed_targets=allowed_targets,
+        strict_tool_schemas=strict_tool_schemas,
+        supports_images=supports_images,
+    )
 
     logger.info(
-        "Built %s agent '%s' (skills=%d, tools=%d, scan_mode=%s, whitebox=%s)",
+        "Built %s agent '%s' (skills=%d, tools=%d, scan_mode=%s, whitebox=%s, profile=%s)",
         "root" if is_root else "child",
         name,
-        len(skills or []),
+        len(resolved_skills),
         len(tools),
         scan_mode,
         is_whitebox,
+        profile_key or "default",
     )
 
     return Agent(
@@ -1317,6 +1516,7 @@ def make_child_factory(
 
     运行级参数由闭包捕获。``model_name`` 是默认 flash 档；每次 spawn 可
     传 ``model_name=None``（旗舰 / general）或 ``use_root_capabilities=True``。
+    ``profile`` 按次透传，工具面经 ToolkitCache 复用。
     """
 
     default_model = model_name
@@ -1335,11 +1535,11 @@ def make_child_factory(
         skills: list[str],
         model_name: Any = _FACTORY_MODEL_SENTINEL,
         use_root_capabilities: bool = False,
+        profile: str | None = None,
     ) -> Agent[Any]:
-        if model_name is _FACTORY_MODEL_SENTINEL:
-            resolved_model = default_model
-        else:
-            resolved_model = model_name
+        resolved_model = (
+            default_model if model_name is _FACTORY_MODEL_SENTINEL else model_name
+        )
         use_strict = flagship_strict if use_root_capabilities else default_strict
         use_images = flagship_images if use_root_capabilities else default_images
         return build_agent(
@@ -1359,6 +1559,42 @@ def make_child_factory(
             coverage_tools=coverage_tools,
             prompts_dir=prompts_dir,
             model_name=resolved_model,
+            profile=profile,
         )
 
+    def prefetch_profiles(profiles: tuple[str, ...] = ("recon",)) -> None:
+        """Run 启动时预热 seed 会用到的 profile 工具面。"""
+        cache = get_toolkit_cache()
+        for raw in profiles:
+            key = normalize_profile(raw)
+            if key is None:
+                continue
+
+            def _builder(p: str = key) -> CachedToolkit:
+                agent = build_agent(
+                    name=f"prefetch-{p}",
+                    skills=[],
+                    is_root=False,
+                    sandbox_session=sandbox_session,
+                    allowed_targets=allowed_targets,
+                    scan_mode=scan_mode,
+                    is_whitebox=is_whitebox,
+                    is_diff_scoped=is_diff_scoped,
+                    interactive=False,
+                    strict_tool_schemas=default_strict,
+                    system_prompt_context=system_prompt_context,
+                    supports_images=default_images,
+                    coverage_tools=coverage_tools,
+                    prompts_dir=prompts_dir,
+                    profile=p,
+                )
+                return CachedToolkit(
+                    profile=p,
+                    tools=list(agent.tools),
+                    tool_names=tuple(t.name for t in agent.tools),
+                )
+
+            cache.get_or_build(sandbox_session, key, _builder)
+
+    _factory.prefetch_profiles = prefetch_profiles  # type: ignore[attr-defined]
     return _factory
