@@ -53,7 +53,7 @@ Run one asset at a time and read each report before starting the next. Findings 
 
 ## 3. Consolidate into one plan
 
-Findings arrive per run in `strix_runs/<run>/`. Merge them into a single list and rank by **proven impact**, not by scanner severity:
+Findings arrive per run in `_artifacts/runs/<run>/`. Merge them into a single list and rank by **proven impact**, not by scanner severity:
 
 1. Validated exploits reachable without authentication.
 2. Validated cross-tenant or privilege-escalation issues.

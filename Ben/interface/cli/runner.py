@@ -26,6 +26,7 @@ from rich.panel import Panel
 from rich.text import Text
 
 from Ben.config import load_settings
+from Ben.core.paths import RUNS_DIR_NAME
 from Ben.interface.terminal.stats import (
     build_final_stats_text,
     build_live_stats_text,
@@ -33,7 +34,6 @@ from Ben.interface.terminal.stats import (
     has_model_response,
 )
 from Ben.report.state import ReportState, set_global_report_state
-
 
 if TYPE_CHECKING:
     import argparse
@@ -235,7 +235,7 @@ async def run_cli(
     start_text.append("\n")
     start_text.append("输出", style="dim")
     start_text.append("  ")
-    start_text.append(f"strix_runs/{run_name}", style=_INFO_STYLE)
+    start_text.append(f"{RUNS_DIR_NAME}/{run_name}", style=_INFO_STYLE)
     start_text.append("\n\n")
     start_text.append("漏洞将在发现时实时展示。", style="dim")
     console.print(_panel(start_text))

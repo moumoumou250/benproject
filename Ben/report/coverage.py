@@ -47,6 +47,7 @@ COVERAGE_SCHEMA_VERSION = 1
 
 #: Ledger outcomes rendered for a reader who has never seen our enum.
 OUTCOME_LABELS: dict[str, str] = {
+    "pending": "Not covered (never assessed)",
     "reported": "Finding reported",
     "no_issue_found": "No issue identified",
     "ruled_out": "Ruled out",
@@ -299,17 +300,90 @@ def _silent_agent_gaps(
 
 
 def _unresolved_gaps(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Ledger rows the agents themselves left open."""
-    return [
-        {
-            "kind": "needs_follow_up",
-            "surface": entry.get("surface", ""),
-            "risk_area": entry.get("risk_area", ""),
-            "detail": str(entry.get("evidence") or "Left open without a stated reason."),
-        }
-        for entry in entries
-        if entry.get("outcome") == "needs_follow_up"
-    ]
+    """Ledger rows still open: pending (never tried) and needs_follow_up."""
+    gaps: list[dict[str, Any]] = []
+    for entry in entries:
+        outcome = str(entry.get("outcome") or "")
+        if outcome == "pending":
+            gaps.append(
+                {
+                    "kind": "pending",
+                    "surface": entry.get("surface", ""),
+                    "risk_area": entry.get("risk_area", ""),
+                    "detail": str(
+                        entry.get("evidence")
+                        or "Enumerated into inventory; never assessed."
+                    ),
+                }
+            )
+        elif outcome == "needs_follow_up":
+            gaps.append(
+                {
+                    "kind": "needs_follow_up",
+                    "surface": entry.get("surface", ""),
+                    "risk_area": entry.get("risk_area", ""),
+                    "detail": str(
+                        entry.get("evidence") or "Left open without a stated reason."
+                    ),
+                }
+            )
+    return gaps
+
+
+def not_covered_section(entries: list[dict[str, Any]]) -> dict[str, Any]:
+    """「Not covered」章节：pending + needs_follow_up，按 risk_area 聚合。"""
+    rows: list[dict[str, Any]] = []
+    by_risk: dict[str, int] = {}
+    for entry in entries:
+        outcome = str(entry.get("outcome") or "")
+        if outcome not in {"pending", "needs_follow_up"}:
+            continue
+        risk = str(entry.get("risk_area") or "unspecified")
+        by_risk[risk] = by_risk.get(risk, 0) + 1
+        rows.append(
+            {
+                "surface": entry.get("surface", ""),
+                "risk_area": risk,
+                "outcome": outcome,
+                "outcome_label": OUTCOME_LABELS.get(outcome, outcome),
+                "source": entry.get("evidence") or entry.get("discovered_by") or "",
+                "entry_id": entry.get("entry_id", ""),
+            }
+        )
+    return {
+        "title": "Not covered",
+        "count": len(rows),
+        "by_risk_area": dict(sorted(by_risk.items())),
+        "items": rows,
+    }
+
+
+def bulk_waivers_section(entries: list[dict[str, Any]]) -> dict[str, Any]:
+    """批量豁免审计：bulk_close_coverage 关闭的 pending → not_applicable。"""
+    rows: list[dict[str, Any]] = []
+    by_pattern: dict[str, int] = {}
+    for entry in entries:
+        if not entry.get("bulk_closed"):
+            continue
+        pattern = str(entry.get("bulk_pattern") or "")
+        by_pattern[pattern] = by_pattern.get(pattern, 0) + 1
+        rows.append(
+            {
+                "surface": entry.get("surface", ""),
+                "risk_area": entry.get("risk_area", ""),
+                "outcome": entry.get("outcome", ""),
+                "bulk_pattern": pattern,
+                "evidence": entry.get("evidence", ""),
+                "entry_id": entry.get("entry_id", ""),
+                "closed_by": entry.get("agent_name") or entry.get("agent_id") or "",
+            }
+        )
+    return {
+        "title": "Bulk waivers",
+        "count": len(rows),
+        "by_pattern": dict(sorted(by_pattern.items())),
+        "items": rows,
+    }
 
 
 def _completeness(
@@ -375,8 +449,9 @@ def build_coverage_document(
         {_skill_leaf(skill) for agent in agents for skill in agent["skills"] if skill}
     )
 
-    ledger = [
-        {
+    ledger = []
+    for entry in entries:
+        row: dict[str, Any] = {
             "surface": entry.get("surface", ""),
             "risk_area": entry.get("risk_area", ""),
             "outcome": entry.get("outcome", ""),
@@ -392,14 +467,18 @@ def build_coverage_document(
             ],
             "source": "agent_reported",
         }
-        for entry in entries
-    ]
+        if entry.get("bulk_closed"):
+            row["bulk_closed"] = True
+            row["bulk_pattern"] = entry.get("bulk_pattern", "")
+        ledger.append(row)
 
     gaps = [
         *_unresolved_gaps(entries),
         *skill_coverage_gaps(entries, agents),
         *_silent_agent_gaps(entries, agents),
     ]
+    not_covered = not_covered_section(entries)
+    bulk_waivers = bulk_waivers_section(entries)
 
     return {
         "schema_version": COVERAGE_SCHEMA_VERSION,
@@ -418,6 +497,8 @@ def build_coverage_document(
             "outcomes": _outcome_counts(entries),
             "findings_filed": len(vulnerability_reports),
             "gaps": len(gaps),
+            "not_covered": not_covered["count"],
+            "bulk_waivers": bulk_waivers["count"],
         },
         "machine_observed": {
             "agents": agents,
@@ -428,6 +509,8 @@ def build_coverage_document(
         "completeness": _completeness(run_record, agents, exit_reason),
         "entries": ledger,
         "gaps": gaps,
+        "not_covered": not_covered,
+        "bulk_waivers": bulk_waivers,
     }
 
 

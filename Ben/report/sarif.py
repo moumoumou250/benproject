@@ -651,6 +651,7 @@ _OUTCOME_TO_KIND = {
     "ruled_out": "pass",
     "not_applicable": "notApplicable",
     "needs_follow_up": "open",
+    "pending": "open",
 }
 
 

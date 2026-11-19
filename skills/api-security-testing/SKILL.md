@@ -55,7 +55,7 @@ Out of scope: POST /billing/*, POST /notifications/broadcast."
 
 ## 3. Verify findings
 
-`strix_runs/<run>/penetration_test_report.md` first, then `vulnerabilities/*.md` — each contains the exact request that proved the issue. Replay it (for example, with `curl`) before reporting; for authorization findings, confirm the response really contains the other tenant's data rather than an empty 200.
+`_artifacts/runs/<run>/penetration_test_report.md` first, then `vulnerabilities/*.md` — each contains the exact request that proved the issue. Replay it (for example, with `curl`) before reporting; for authorization findings, confirm the response really contains the other tenant's data rather than an empty 200.
 
 `findings.sarif` uploads to GitHub code scanning; `vulnerabilities.json` is the structured index for ticketing.
 

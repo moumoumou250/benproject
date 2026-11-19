@@ -1,0 +1,20 @@
+{
+  "name": "juice-shop-smoke",
+  "description": "OWASP Juice Shop 烟雾对照；match 子串按你们环境 PoC 调整",
+  "expected": [
+    {
+      "id": "sqli-login",
+      "type": "sql-injection",
+      "match": ["sql", "login"]
+    },
+    {
+      "id": "xss-search",
+      "type": "xss",
+      "match": ["xss"]
+    }
+  ],
+  "surfaces": [
+    "/rest/user/login",
+    "/api/Users"
+  ]
+}

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import math
 import os
-from pathlib import Path
 import subprocess
 import sys
 import threading
 import uuid
+from pathlib import Path
 from urllib.parse import urlsplit
+
+from Ben.core.paths import ARTIFACTS_DIR_NAME, runs_base_dir
 
 
 class ScanLauncher:
@@ -20,7 +22,7 @@ class ScanLauncher:
         self.previous: set[str] = set()
         self.target = ""
         self.control_path: Path | None = None
-        self.log_path = self.root / "reports" / "web-scan.log"
+        self.log_path = self.root / ARTIFACTS_DIR_NAME / "reports" / "web-scan.log"
 
     def status(self) -> dict:
         with self.lock:
@@ -31,7 +33,7 @@ class ScanLauncher:
         candidates = (
             [
                 p
-                for p in (self.root / "strix_runs").glob("*")
+                for p in runs_base_dir(cwd=self.root).glob("*")
                 if p.name not in self.previous and (p / "run.json").is_file()
             ]
             if self.process
@@ -41,7 +43,9 @@ class ScanLauncher:
         return {
             "running": self.process is not None and code is None,
             "exit_code": code,
-            "paused": bool(self.process and code is None and self.control_path and self.control_path.exists()),
+            "paused": bool(
+                self.process and code is None and self.control_path and self.control_path.exists()
+            ),
             "run": run,
             "target": self.target,
             "log": self.log_path.read_text(encoding="utf-8", errors="replace")[-20000:]
@@ -95,7 +99,7 @@ class ScanLauncher:
         with self.lock:
             if self.process and self.process.poll() is None:
                 raise RuntimeError("已有测试正在运行，请等待完成")
-            self.previous = {p.name for p in (self.root / "strix_runs").glob("*")}
+            self.previous = {p.name for p in runs_base_dir(cwd=self.root).glob("*")}
             self.target = target.strip()
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
             # Independent server sessions must not contend for one Windows log handle.
@@ -134,5 +138,7 @@ class ScanLauncher:
                         creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
                     )
             except OSError as exc:
-                raise RuntimeError(f"无法启动扫描，请检查运行环境及报告目录写入权限：{exc}") from exc
+                raise RuntimeError(
+                    f"无法启动扫描，请检查运行环境及报告目录写入权限：{exc}"
+                ) from exc
             return self._status()

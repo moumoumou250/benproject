@@ -87,6 +87,178 @@ _DEFAULT_PATHS: tuple[str, ...] = (
     "/status",
 )
 
+# standard 档补充：常见备份/面板/API/云元数据旁路探测入口（仍远小于爆破字典）。
+_STANDARD_EXTRA_PATHS: tuple[str, ...] = (
+    "/wp-admin/",
+    "/wp-login.php",
+    "/wp-json/",
+    "/user/login",
+    "/users/sign_in",
+    "/accounts/login/",
+    "/auth/login",
+    "/oauth/authorize",
+    "/oauth/token",
+    "/.git/config",
+    "/.svn/entries",
+    "/.hg/hgrc",
+    "/config.json",
+    "/config.yml",
+    "/application.properties",
+    "/web.config",
+    "/crossdomain.xml",
+    "/clientaccesspolicy.xml",
+    "/server-info",
+    "/server-status/",
+    "/nginx_status",
+    "/elmah.axd",
+    "/trace.axd",
+    "/_profiler/",
+    "/_debugbar/",
+    "/telescope",
+    "/horizon",
+    "/sidekiq",
+    "/resque",
+    "/flower",
+    "/adminer.php",
+    "/phpmyadmin/",
+    "/pma/",
+    "/manager/html",
+    "/jmx-console/",
+    "/actuator/env",
+    "/actuator/mappings",
+    "/actuator/beans",
+    "/actuator/configprops",
+    "/api/v1",
+    "/api/v2",
+    "/api/v3",
+    "/api/swagger",
+    "/api/swagger.json",
+    "/api/openapi.json",
+    "/swagger.json",
+    "/swagger/v1/swagger.json",
+    "/docs",
+    "/redoc",
+    "/graphiql",
+    "/altair",
+    "/playground",
+    "/v1/graphql",
+    "/v2/graphql",
+    "/health",
+    "/healthz",
+    "/ready",
+    "/readiness",
+    "/liveness",
+    "/version",
+    "/info",
+    "/env",
+    "/.env.local",
+    "/.env.production",
+    "/.env.backup",
+    "/backup.tar.gz",
+    "/backup.sql",
+    "/db.sql",
+    "/dump.sql",
+    "/database.sql",
+    "/site.zip",
+    "/www.zip",
+    "/web.zip",
+    "/old/",
+    "/bak/",
+    "/tmp/",
+    "/temp/",
+    "/test/",
+    "/testing/",
+    "/dev/",
+    "/staging/",
+    "/beta/",
+    "/internal/",
+    "/private/",
+    "/console/",
+    "/dashboard",
+    "/portal",
+    "/manage",
+    "/management",
+    "/monitor",
+    "/monitoring",
+    "/status.json",
+    "/metrics.json",
+    "/prometheus",
+    "/grafana/",
+    "/kibana/",
+    "/solr/",
+    "/elasticsearch/",
+    "/_cat/indices",
+    "/cgi-bin/",
+    "/bin/",
+    "/static/",
+    "/assets/",
+    "/public/",
+    "/uploads/",
+    "/upload",
+    "/files/",
+    "/file/",
+    "/download",
+    "/export",
+    "/import",
+    "/report",
+    "/reports",
+    "/search",
+    "/api/search",
+    "/api/users",
+    "/api/user",
+    "/api/account",
+    "/api/accounts",
+    "/api/orders",
+    "/api/products",
+    "/api/admin",
+    "/api/internal",
+    "/api/debug",
+    "/api/health",
+    "/api/status",
+    "/api/config",
+    "/rest/",
+    "/rpc/",
+    "/xmlrpc.php",
+    "/soap/",
+    "/ws/",
+    "/websocket",
+    "/socket.io/",
+    "/.well-known/change-password",
+    "/.well-known/assetlinks.json",
+    "/.well-known/apple-app-site-association",
+    "/favicon.ico",
+    "/humans.txt",
+    "/security.txt",
+    "/package.json",
+    "/composer.json",
+    "/yarn.lock",
+    "/package-lock.json",
+    "/Dockerfile",
+    "/docker-compose.yml",
+    "/.docker/config.json",
+    "/.aws/credentials",
+    "/id_rsa",
+    "/id_rsa.pub",
+    "/.ssh/id_rsa",
+    "/backup/",
+    "/backups/",
+    "/copy/",
+    "/src/",
+    "/source/",
+    "/.idea/",
+    "/.vscode/",
+    "/.DS_Store",
+    "/Thumbs.db",
+    "/error",
+    "/errors",
+    "/404",
+    "/500",
+    "/exception",
+    "/trace",
+    "/debug/default/view",
+    "/_ignition/health-check",
+)
+
 _SECURITY_HEADERS: tuple[str, ...] = (
     "content-security-policy",
     "strict-transport-security",
@@ -580,6 +752,7 @@ class Recon:
         max_js: int,
         frontend: bool,
         raw_dir: Path | None,
+        js_budget_kb: int = 512,
     ) -> None:
         self.target = target
         self.base_url = base_url
@@ -589,6 +762,7 @@ class Recon:
         self.paths = paths
         self.max_paths = max_paths
         self.max_js = max_js
+        self.js_budget_bytes = max(1, int(js_budget_kb)) * 1024
         self.frontend = frontend
         self.raw_dir = raw_dir
         self.result = ReconResult(
@@ -847,6 +1021,20 @@ class Recon:
             response = self.channel.fetch(script_url)
             if response.error or not response.ok:
                 continue
+            if len(response.body) > self.js_budget_bytes:
+                self.result.add(
+                    Fact(
+                        "note",
+                        "脚本超 js-budget 已跳过解析",
+                        {
+                            "url": script_url,
+                            "bytes": len(response.body),
+                            "budget_bytes": self.js_budget_bytes,
+                        },
+                        "frontend",
+                    )
+                )
+                continue
             endpoints.extend(_candidate_endpoints(response.body))
             self._save_raw(f"scripts/{Path(urlsplit(script_url).path).name}", response)
         unique: list[str] = []
@@ -857,11 +1045,16 @@ class Recon:
             seen.add(item)
             unique.append(item)
         if unique:
+            shown = unique[:300]
             self.result.add(
                 Fact(
                     "endpoint",
                     "候选接口/路径",
-                    {"items": unique[:60], "count": len(unique)},
+                    {
+                        "items": shown,
+                        "shown": len(shown),
+                        "count": len(unique),
+                    },
                     "frontend",
                 )
             )
@@ -1288,38 +1481,77 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-paths", action="store_true", help="跳过默认路径表探测")
     parser.add_argument("--path-list", metavar="FILE", help="自定义路径清单（每行一个，# 为注释）")
     parser.add_argument(
+        "--path-tier",
+        choices=("common", "standard", "deep"),
+        default="common",
+        help=(
+            "路径字典档位：common=内置短表；standard≈200；deep≈2000（需 --path-list "
+            "或后续扩展字典）。与 --max-paths 同时给时以 --max-paths 为准"
+        ),
+    )
+    parser.add_argument(
         "--max-paths",
         type=int,
-        default=len(_DEFAULT_PATHS),
+        default=None,
         metavar="N",
-        help=f"最多探测多少条路径（默认 {len(_DEFAULT_PATHS)}）",
+        help="最多探测多少条路径（默认随 --path-tier：common 用内置短表长度）",
     )
     parser.add_argument("--no-frontend", action="store_true", help="跳过 HTML/JS 提取（不抓脚本）")
     parser.add_argument(
-        "--max-js", type=int, default=3, metavar="N", help="最多抓几个同源脚本（默认 3）"
+        "--max-js",
+        type=int,
+        default=15,
+        metavar="N",
+        help="最多抓几个同源脚本（默认 15）",
+    )
+    parser.add_argument(
+        "--js-budget-kb",
+        type=int,
+        default=512,
+        metavar="N",
+        help="单个脚本最大读取 KB（默认 512；超限跳过）",
     )
     parser.add_argument("--no-docker", action="store_true", help="只在宿主机侧收集，不启动容器")
     parser.add_argument("--pull", action="store_true", help="镜像缺失时先拉取")
     return parser
 
 
+def _paths_for_tier(tier: str) -> tuple[str, ...]:
+    if tier == "standard":
+        seen: set[str] = set()
+        out: list[str] = []
+        for path in (*_DEFAULT_PATHS, *_STANDARD_EXTRA_PATHS):
+            if path in seen:
+                continue
+            seen.add(path)
+            out.append(path)
+        return tuple(out)
+    # common / deep 无内置大字典时退回短表；deep 需 --path-list
+    return _DEFAULT_PATHS
+
+
 def _load_paths(args: argparse.Namespace) -> tuple[str, ...]:
     if args.no_paths:
         return ()
-    if not args.path_list:
-        return _DEFAULT_PATHS
-    path = Path(args.path_list)
-    if not path.is_file():
-        raise ValueError(f"路径清单不存在：{path}")
-    items: list[str] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        items.append(stripped if stripped.startswith("/") else f"/{stripped}")
-    if not items:
-        raise ValueError(f"路径清单为空：{path}")
-    return tuple(items)
+    if args.path_list:
+        path = Path(args.path_list)
+        if not path.is_file():
+            raise ValueError(f"路径清单不存在：{path}")
+        items: list[str] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            items.append(stripped if stripped.startswith("/") else f"/{stripped}")
+        if not items:
+            raise ValueError(f"路径清单为空：{path}")
+        return tuple(items)
+    tier = str(getattr(args, "path_tier", "common") or "common")
+    if tier == "deep":
+        raise ValueError(
+            "--path-tier deep 需要同时提供 --path-list（内置不附带 2000 条爆破字典）"
+        )
+    return _paths_for_tier(tier)
 
 
 def _slug(host: str) -> str:
@@ -1337,8 +1569,10 @@ def run_recon(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     if args.timeout <= 0:
         parser.error("--timeout 必须大于 0")
-    if args.max_paths < 0 or args.max_js < 0:
-        parser.error("--max-paths / --max-js 不能为负")
+    if args.max_paths is not None and args.max_paths < 0:
+        parser.error("--max-paths 不能为负")
+    if args.max_js < 0 or getattr(args, "js_budget_kb", 1) < 0:
+        parser.error("--max-js / --js-budget-kb 不能为负")
 
     from Ben.config import load_settings
 
@@ -1452,6 +1686,9 @@ def _recon_with_report(
     if raw_dir is not None:
         raw_dir.mkdir(parents=True, exist_ok=True)
 
+    max_paths = (
+        int(args.max_paths) if args.max_paths is not None else len(paths) or len(_DEFAULT_PATHS)
+    )
     recon = Recon(
         target=report.target,
         base_url=base_url,
@@ -1459,10 +1696,11 @@ def _recon_with_report(
         allowed=allowed,
         channel=channel,
         paths=paths,
-        max_paths=args.max_paths,
+        max_paths=max_paths,
         max_js=args.max_js,
         frontend=not args.no_frontend,
         raw_dir=raw_dir,
+        js_budget_kb=int(getattr(args, "js_budget_kb", 512) or 512),
     )
     try:
         result = recon.run()

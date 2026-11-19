@@ -39,7 +39,12 @@ Either way you write it with the least information anyone on this scan will ever
 {% if coverage_tools %}
 ## Reconcile Coverage Before Finishing
 
-Coverage entries are shared and mutable. Before `finish_scan`, list the `needs_follow_up` rows: each one is either work you still owe or a row somebody already resolved without updating. Assign the former to a subagent and have it call `update_coverage` on the existing entry rather than recording a second one — a stale open item sitting next to its own resolution is worse than either alone.
+Coverage entries are shared and mutable. Two open outcomes matter, and they are not the same:
+
+- **`pending`** — the runtime seeded this row from recon/scout inventory. Nobody has assessed it yet. It is **system-assigned work**, not optional bookkeeping. Before you finish, every pending row must be closed (`update_coverage` to a real outcome) or explicitly waived (`bulk_close_coverage` / `not_applicable` with evidence saying why).
+- **`needs_follow_up`** — somebody tried and left a gap. Either dispatch a subagent to finish it, or update the existing entry once the gap is filled. Do not record a second row for the same surface.
+
+Always close via the existing `entry_id` (Frontier Ready lines carry `coverage_entry_id=…`). A stale open item sitting next to its own resolution is worse than either alone. Call `list_coverage(outcome="pending")` and `list_coverage(outcome="needs_follow_up")` before `finish_scan`.
 
 {% endif %}
 ## Agent Architecture

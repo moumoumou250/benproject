@@ -11,11 +11,12 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from Ben.core.paths import RUNS_DIR_NAME
 from Ben.interface.cli.completions import completion_candidates, run_completions
 
 
 def _write_run(base: Any, name: str, *, record: bool = True) -> None:
-    run_dir = base / "strix_runs" / name
+    run_dir = base / RUNS_DIR_NAME / name
     run_dir.mkdir(parents=True)
     if record:
         (run_dir / "run.json").write_text(json.dumps({"run_name": name}), encoding="utf-8")
@@ -47,7 +48,7 @@ def test_view_run_name_candidates(tmp_path: Any, monkeypatch: Any) -> None:
     _write_run(tmp_path, "ben_20260101_aaaa")
     _write_run(tmp_path, "ben_20260102_bbbb")
     # 没有 run.json 的目录不是可恢复 run，不参与补全。
-    (tmp_path / "strix_runs" / "not-a-run").mkdir(parents=True)
+    (tmp_path / RUNS_DIR_NAME / "not-a-run").mkdir(parents=True)
 
     assert completion_candidates(["view", ""]) == [
         "ben_20260101_aaaa",

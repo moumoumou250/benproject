@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from Ben.config import keypool
+from Ben.core.paths import RUNS_DIR_NAME
 from Ben.interface.viewer.server import serve
 
 if TYPE_CHECKING:
@@ -27,7 +28,7 @@ def pool_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 @pytest.fixture()
 def viewer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[str, str]]:
     """一个最小 run 目录 + 已启动的 viewer 服务器，返回 (url, cookie)。"""
-    run_dir = tmp_path / "strix_runs" / "demo"
+    run_dir = tmp_path / RUNS_DIR_NAME / "demo"
     (run_dir / ".state").mkdir(parents=True)
     (run_dir / "run.json").write_text(
         json.dumps({"run_name": "demo", "status": "completed", "end_time": "2026-01-01"}),

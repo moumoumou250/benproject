@@ -484,7 +484,8 @@ class Settings(_BenSettings):
         return self.context.tool_output_max_bytes
 
     # --- 输出 ---
-    reports_dir: Path = Field(default=PROJECT_ROOT / "reports")
+    # 报告与轨迹统一落在 _artifacts/reports/，与扫描产物同根。
+    reports_dir: Path = Field(default=PROJECT_ROOT / "_artifacts" / "reports")
     prompts_dir: Path = Field(
         default=Path(__file__).resolve().parents[1] / "agents" / "prompts",
     )

@@ -74,6 +74,8 @@ class Skill:
     is_template: bool  # frontmatter template == "jinja"
     body: str  # 剥除 frontmatter 后的正文
     source: Path  # 来源文件（用于告警与覆盖追踪）
+    # 可选别名（仅元数据；skill_catalog / system prompt 不渲染，零 token 成本）
+    aliases: tuple[str, ...] = ()
 
     @property
     def qualified_name(self) -> str:
@@ -148,6 +150,8 @@ def _parse_skill_file(path: Path, category: str) -> Skill | None:
                        name, template_flag, path)
         template_flag = "none"
 
+    aliases = _parse_aliases(meta.get("aliases"), path=path)
+
     return Skill(
         name=name,
         description=description,
@@ -155,7 +159,36 @@ def _parse_skill_file(path: Path, category: str) -> Skill | None:
         is_template=template_flag == _TEMPLATE_JINJA,
         body=text[match.end():].strip("\n"),
         source=path,
+        aliases=aliases,
     )
+
+
+def _parse_aliases(raw: Any, *, path: Path) -> tuple[str, ...]:
+    """frontmatter ``aliases`` → 去重后的元组；非法形态告警并当作空。"""
+    if raw is None:
+        return ()
+    if isinstance(raw, str):
+        items = [raw]
+    elif isinstance(raw, list):
+        items = raw
+    else:
+        logger.warning("片段 aliases 须为字符串或列表，已忽略：%s", path)
+        return ()
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        alias = str(item or "").strip()
+        if not alias:
+            continue
+        if not _NAME_RE.match(alias):
+            logger.warning("片段 alias %r 不符合命名规范，已忽略：%s", alias, path)
+            continue
+        key = alias.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(alias)
+    return tuple(out)
 
 
 def _iter_skill_files(dir_path: Path):

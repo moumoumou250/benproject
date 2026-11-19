@@ -13,6 +13,7 @@ from pypdf.errors import WrongPasswordError
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.platypus import Paragraph
 
+from Ben.core.paths import RUNS_DIR_NAME
 from Ben.interface.viewer.report_pdf import (
     _duration,
     _inline_md,
@@ -23,13 +24,12 @@ from Ben.interface.viewer.report_pdf import (
     generate_report_pdf,
 )
 
-
 if TYPE_CHECKING:
     from pathlib import Path
 
 
 def _make_run(base: Path, name: str = "sample") -> Path:
-    run_dir = base / "strix_runs" / name
+    run_dir = base / RUNS_DIR_NAME / name
     run_dir.mkdir(parents=True)
     record = {
         "run_name": name,

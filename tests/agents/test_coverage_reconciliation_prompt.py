@@ -14,8 +14,9 @@ from tests.conftest import build_agent
 
 _RECONCILIATION = "**Coverage reconciliation.**"
 _LIST_COVERAGE = "``list_coverage``"
-_FOLLOW_UP = "``needs_follow_up`` row, not a silent omission"
-_SILENT_OMISSION = "not a silent omission"
+_PENDING = "``pending``"
+_FOLLOW_UP = "``needs_follow_up``"
+_SILENT_OMISSION = "never a silent omission"
 
 
 def test_finish_scan_requires_coverage_reconciliation() -> None:
@@ -23,6 +24,7 @@ def test_finish_scan_requires_coverage_reconciliation() -> None:
 
     assert _RECONCILIATION in description
     assert _LIST_COVERAGE in description
+    assert _PENDING in description
     assert _FOLLOW_UP in description
     assert _SILENT_OMISSION in description
 

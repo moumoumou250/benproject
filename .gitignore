@@ -13,15 +13,16 @@ __pycache__/
 # Node 依赖（mcp_servers 下各服务器的 node_modules）
 node_modules/
 
-# 测试报告与轨迹（含执行证据，默认不提交；保留目录）
+# 运行产物统一根：扫描记录、报告、工具缓存全部落在这里（绝不入库）
+_artifacts/
+
+# 历史产物目录（旧版本把产物直接放在仓库根；保留兼容读取，仍不入库）
 reports/*
 !reports/.gitkeep
-
-# 运行产物（每次扫描/测试生成，绝不入库）
 strix_runs/*
 !strix_runs/.gitkeep
 
-# 工具缓存
+# 工具缓存（已改到 _artifacts/cache，保留旧路径忽略以防万一）
 .pytest_cache/
 .ruff_cache/
 # 有人用 --basetemp 把 pytest 临时目录放进仓库时留下的产物
@@ -48,3 +49,6 @@ recon/
 # 临时校验环境（本地跑测试用，不入库）
 .venv-verify/
 .tmp-verify/
+
+# 桌面回收站误入
+.Trash-0/

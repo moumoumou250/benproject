@@ -47,61 +47,12 @@ import re
 from typing import Any
 from collections.abc import Callable
 
+from Ben.kb.vocab import ALIASES as _ALIASES
+
 __all__ = ["build_parser", "resolve_vulnerability_skills", "run_vuln"]
 
 # create_agent / load_skill 的上限（Ben/tools/load_skill/tool.py: MAX_SKILLS_PER_CALL）。
 MAX_SKILLS = 5
-
-# 常见的缩写写法 → Ben/skills/vulnerabilities 里的规范名。
-# 只收"人真的会打"的别名；其余靠规范化 + 前缀/近似匹配兜底，
-# 避免把 28 个技能名抄两遍后忘了同步。
-_ALIASES: dict[str, str] = {
-    "sqli": "sql-injection",
-    "sqlinject": "sql-injection",
-    "blind-sqli": "sql-injection",
-    "nosqli": "nosql-injection",
-    "bola": "idor",
-    "bfla": "broken-function-level-authorization",
-    "broken-access-control": "idor",
-    "access-control": "idor",
-    "lfi": "path-traversal-lfi-rfi",
-    "rfi": "path-traversal-lfi-rfi",
-    "traversal": "path-traversal-lfi-rfi",
-    "path-traversal": "path-traversal-lfi-rfi",
-    "file-read": "path-traversal-lfi-rfi",
-    "crlf": "header-injection",
-    "response-splitting": "header-injection",
-    "race": "race-conditions",
-    "race-condition": "race-conditions",
-    "jwt": "authentication-jwt",
-    "auth": "authentication-jwt",
-    "authentication": "authentication-jwt",
-    "logic": "business-logic",
-    "biz-logic": "business-logic",
-    "infoleak": "information-disclosure",
-    "info-disclosure": "information-disclosure",
-    "takeover": "subdomain-takeover",
-    "subdomain": "subdomain-takeover",
-    "weak-password": "weak-password-detection",
-    "bruteforce": "weak-password-detection",
-    "default-creds": "weak-password-detection",
-    "upload": "insecure-file-uploads",
-    "file-upload": "insecure-file-uploads",
-    "deserialization": "insecure-deserialization",
-    "smuggling": "http-request-smuggling",
-    "request-smuggling": "http-request-smuggling",
-    "llm": "llm-prompt-injection",
-    "prompt-injection": "llm-prompt-injection",
-    "dom": "browser-security",
-    "client-side": "browser-security",
-    "agentic": "agentic-system-security",
-    "mcp": "agentic-system-security",
-    "ai-agent": "agentic-system-security",
-    "openredirect": "open-redirect",
-    "redirect": "open-redirect",
-    "massassign": "mass-assignment",
-    "prototype": "prototype-pollution",
-}
 
 # 聚焦指令：插在用户 instruction 之前。措辞对齐 system_prompt 的既有纪律
 # （证据分级、不推测、上报格式），只收紧"范围"和"委派"两件事。

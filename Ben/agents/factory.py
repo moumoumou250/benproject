@@ -65,7 +65,12 @@ from Ben.tools.agents_graph.tools import (
     view_agent_graph,
     wait_for_agents,
 )
-from Ben.tools.coverage.tools import list_coverage, record_coverage, update_coverage
+from Ben.tools.coverage.tools import (
+    bulk_close_coverage,
+    list_coverage,
+    record_coverage,
+    update_coverage,
+)
 from Ben.tools.facts.tools import list_facts, record_fact
 from Ben.tools.finish.tool import finish_scan
 from Ben.tools.load_skill.tool import load_skill
@@ -1034,7 +1039,12 @@ def _finish_tool_use_behavior(
 # 工具集（对齐 strix 的 _BASE_TOOLS / _EXTRA_TOOLS）
 # ---------------------------------------------------------------------------
 
-_COVERAGE_TOOLS: tuple[Tool, ...] = (record_coverage, update_coverage, list_coverage)
+_COVERAGE_TOOLS: tuple[Tool, ...] = (
+    record_coverage,
+    update_coverage,
+    list_coverage,
+    bulk_close_coverage,
+)
 _FINISH_SCAN_COVERAGE_STEP = re.compile(
     r"\n5\. \*\*Coverage reconciliation\.\*\*.*?(?=\n\n)", re.DOTALL
 )
@@ -1064,6 +1074,7 @@ _BASE_TOOLS: tuple[Tool, ...] = (
     record_coverage,
     update_coverage,
     list_coverage,
+    bulk_close_coverage,
     get_threat_model,
     save_threat_model,
     amend_threat_model,

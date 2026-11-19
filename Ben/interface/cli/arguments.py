@@ -107,7 +107,7 @@ def parse_arguments() -> argparse.Namespace:
         const="",
         metavar="RUN_NAME",
         help=(
-            "按 run 名称恢复既往扫描（./strix_runs/ 下的目录名），接续 root 与"
+            "按 run 名称恢复既往扫描（./_artifacts/runs/ 下的目录名），接续 root 与"
             "未终结子 agent 的完整 LLM 历史与图拓扑。与 --target/--target-list"
             " 互斥；不带名称时列出可恢复的 runs 并退出。"
         ),
@@ -387,7 +387,7 @@ def load_resume_state(args: argparse.Namespace) -> None:
     对齐 strix load_resume_state：run 缺失、run.json 不可读、工作目录已删、
     工作区文件路径被篡改或首个 agent 快照未到时抛 :class:`ResumeError`。
     """
-    from Ben.core.paths import run_dir_for, run_record_path, runtime_state_dir
+    from Ben.core.paths import resolve_run_dir, run_record_path, runtime_state_dir
     from Ben.interface.cli.scan_setup import attach_workspace_mount
     from Ben.interface.shared.targets import (
         check_mountable_dir,
@@ -396,7 +396,7 @@ def load_resume_state(args: argparse.Namespace) -> None:
     )
     from Ben.report.writer import read_run_record
 
-    run_dir = run_dir_for(args.resume)
+    run_dir = resolve_run_dir(args.resume)
     state_path = run_record_path(run_dir)
     if not state_path.exists():
         raise ResumeError(

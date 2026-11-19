@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 import time
+from pathlib import Path
 
-from Ben.core.paths import latest_run_dir
+from Ben.core.paths import latest_run_dir, runs_base_dir
 from Ben.interface.viewer.launcher import ScanLauncher
 from Ben.interface.viewer.server import authorized_url, bundle_is_built, serve
 
@@ -22,7 +22,7 @@ def main() -> None:
         )
     root = Path.cwd()
     launcher = ScanLauncher(root)
-    run = latest_run_dir() or root / "strix_runs" / "_empty"
+    run = latest_run_dir() or runs_base_dir(cwd=root) / "_empty"
     server, url, token = serve(
         run, port=args.port, open_browser=not args.no_open, launcher=launcher
     )

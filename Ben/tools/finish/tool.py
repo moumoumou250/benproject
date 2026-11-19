@@ -93,14 +93,27 @@ def _do_finish(
                 report["title"] = f"[未验证] {title}"
             elif status == "refuted" and title and "[已证伪]" not in title:
                 report["title"] = f"[已证伪] {title}"
+        vuln_count = len(report_state.vulnerability_reports)
+        coverage_summary = _coverage_summary(agent_graph)
+        # strict：先拒收，不落盘终稿，逼 root 清 pending
+        if coverage_summary.get("success") is False:
+            blocked: dict[str, Any] = {
+                "success": False,
+                "scan_completed": False,
+                "message": str(
+                    coverage_summary.get("error") or "Coverage gate blocked finish_scan"
+                ),
+                "vulnerabilities_found": vuln_count,
+            }
+            blocked.update(verify_summary)
+            blocked.update(coverage_summary)
+            return blocked
         report_state.update_scan_final_fields(
             executive_summary=executive_summary.strip(),
             methodology=methodology.strip(),
             technical_analysis=tech,
             recommendations=recommendations.strip(),
         )
-        vuln_count = len(report_state.vulnerability_reports)
-        coverage_summary = _coverage_summary(agent_graph)
     except (ImportError, AttributeError) as e:
         logger.exception("finish_scan persistence failed")
         return {"success": False, "error": f"Failed to complete scan: {e!s}"}
@@ -120,15 +133,20 @@ def _do_finish(
         return result
 
 
+def _coverage_gate_mode() -> str:
+    """``warn``（默认）或 ``strict``。其它值按 warn 处理。"""
+    import os
+
+    raw = (os.environ.get("BEN_COVERAGE_GATE") or "warn").strip().lower()
+    return "strict" if raw == "strict" else "warn"
+
+
 def _coverage_summary(agent_graph: dict[str, Any]) -> dict[str, Any]:
     """Coverage counts, unresolved surfaces, and gaps the runtime can see.
 
-    The gap list is derived from the agent graph rather than from the ledger,
-    so it catches the failure the ledger cannot: a risk class an agent was
-    equipped for and never accounted for. Surfacing it here — in the response
-    to the call that ends the scan — is the last point at which the root agent
-    can still dispatch work or record the class as unresolved instead of
-    letting the report imply it was clean.
+    Distinguishes ``pending`` (never tried) from ``needs_follow_up`` (tried,
+    no conclusion). ``BEN_COVERAGE_GATE=strict`` refuses finish while either
+    remains open.
     """
     from Ben.report.coverage import agents_from_graph, skill_coverage_gaps
     from Ben.tools.coverage.tools import get_coverage_entries, outcome_counts
@@ -149,16 +167,34 @@ def _coverage_summary(agent_graph: dict[str, Any]) -> dict[str, Any]:
         "coverage_recorded": len(entries),
         "coverage_outcomes": counts,
     }
-    unresolved = [e for e in entries if e.get("outcome") == "needs_follow_up"]
+    pending = [e for e in entries if e.get("outcome") == "pending"]
+    follow_up = [e for e in entries if e.get("outcome") == "needs_follow_up"]
+    unresolved = [*pending, *follow_up]
     if unresolved:
+        parts: list[str] = []
+        if pending:
+            parts.append(f"{len(pending)} pending (never assessed)")
+        if follow_up:
+            parts.append(f"{len(follow_up)} needs_follow_up")
         summary["coverage_warning"] = (
-            f"{len(unresolved)} surface(s) closed as 'needs_follow_up' and remain "
-            "unresolved. These should be represented in the report as areas requiring "
-            "further review rather than omitted."
+            f"{len(unresolved)} surface(s) still open ({'; '.join(parts)}). "
+            "Represent them in the report as Not covered / further review — "
+            "do not omit them."
         )
         summary["unresolved_surfaces"] = [
-            {"surface": e.get("surface", ""), "risk_area": e.get("risk_area", "")}
+            {
+                "surface": e.get("surface", ""),
+                "risk_area": e.get("risk_area", ""),
+                "outcome": e.get("outcome", ""),
+                "entry_id": e.get("entry_id", ""),
+                "evidence": e.get("evidence", ""),
+            }
             for e in unresolved
+        ]
+        summary["pending_surfaces"] = [
+            {"surface": e.get("surface", ""), "risk_area": e.get("risk_area", ""),
+             "entry_id": e.get("entry_id", "")}
+            for e in pending
         ]
 
     gaps = skill_coverage_gaps(entries, agents_from_graph(agent_graph))
@@ -169,6 +205,18 @@ def _coverage_summary(agent_graph: dict[str, Any]) -> dict[str, Any]:
             "will be published as unexamined. Record them (or a needs_follow_up row) "
             "before the report goes out."
         )
+
+    if unresolved and _coverage_gate_mode() == "strict":
+        summary["success"] = False
+        summary["scan_completed"] = False
+        summary["error"] = (
+            "BEN_COVERAGE_GATE=strict: refuse finish_scan while pending / "
+            "needs_follow_up rows remain. Dispatch agents or update_coverage "
+            "(not_applicable with evidence) to clear them."
+        )
+        summary["coverage_gate"] = "strict"
+    else:
+        summary["coverage_gate"] = _coverage_gate_mode()
     return summary
 
 
@@ -234,14 +282,13 @@ async def finish_scan(
        chain after a serious attempt is acceptable; skipping the
        chaining reasoning, or ignoring a plausibly-related combination,
        is not.
-    5. **Coverage reconciliation.** Call ``list_coverage`` and check
-       what was actually assessed against the surfaces you enumerated
-       during reconnaissance. Every surface you dispatched work on
-       should have a coverage entry; anything still open should be a
-       ``needs_follow_up`` row, not a silent omission. If a significant
-       surface has no entry at all, dispatch an agent to cover it or
-       record it as ``needs_follow_up`` before finishing. The response
-       from this tool reports coverage counts and any unresolved rows.
+    5. **Coverage reconciliation.** Call ``list_coverage`` and clear
+       both ``pending`` (inventory seeded, never assessed — system-
+       assigned work) and ``needs_follow_up`` (tried, unresolved).
+       Close via ``update_coverage`` on the existing ``entry_id``, or
+       waive obvious non-targets with ``bulk_close_coverage`` /
+       ``not_applicable`` plus evidence — never a silent omission.
+       The response reports coverage counts and any unresolved rows.
 
     **Calling this multiple times overwrites the previous report.**
     Make the single call comprehensive.

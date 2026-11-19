@@ -167,6 +167,9 @@ class AgentRunResult:
     turns_used: int
     stopped_reason: str
     invocations: list[ToolInvocation] = field(default_factory=list)
+    # 结构化结束码（finished/max_turns/budget/...）；verify 只认这个，不猜中文 reason
+    stopped_code: str = "unknown"
+    audit_dir: Path | None = None
 
 
 def _read_agent_session_items(agents_db: Path, agent_id: str) -> list[dict[str, Any]]:
@@ -790,29 +793,47 @@ class AgentRunner:
 
         hydrate_task_graph_from_disk(state_dir)
         # prepare_run 把 seed 写进 workspace_files；此处落盘路径已就绪，再幂等灌图。
+        seed_payload: dict[str, Any] | None = None
         for entry in self.workspace_files or []:
             if entry.get("workspace_path") != "/workspace/preseed/facts.json":
                 continue
             raw = entry.get("content")
             if isinstance(raw, bytes):
                 try:
-                    payload = json.loads(raw.decode("utf-8"))
+                    loaded = json.loads(raw.decode("utf-8"))
                 except (UnicodeDecodeError, json.JSONDecodeError):
                     break
             elif isinstance(raw, str):
                 try:
-                    payload = json.loads(raw)
+                    loaded = json.loads(raw)
                 except json.JSONDecodeError:
                     break
             else:
                 break
-            facts = payload.get("facts") if isinstance(payload, dict) else None
-            if isinstance(facts, list):
-                ingest_seed_facts(
-                    [f for f in facts if isinstance(f, dict)],
-                    creator="seed",
-                )
+            if isinstance(loaded, dict):
+                seed_payload = loaded
+                facts = loaded.get("facts")
+                if isinstance(facts, list):
+                    ingest_seed_facts(
+                        [f for f in facts if isinstance(f, dict)],
+                        creator="seed",
+                    )
             break
+        # Inventory → coverage pending：recon/scout 看见的面进账本，收尾可交代。
+        if seed_payload is not None:
+            try:
+                from Ben.core.inventory import inventory_from_seed_payload
+                from Ben.tools.coverage.tools import seed_pending_entries
+
+                inventory_rows = inventory_from_seed_payload(seed_payload)
+                seeded = seed_pending_entries(inventory_rows)
+                logger.info(
+                    "inventory: %d surface(s) seeded as pending (%d candidate(s))",
+                    seeded,
+                    len(inventory_rows),
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("inventory seeding into coverage failed (non-fatal)")
         bind_orchestration_metrics(run_dir)
         bind_heartbeat(run_dir)
 
@@ -900,6 +921,7 @@ class AgentRunner:
 
         max_turns = self.max_turns or settings.max_agent_turns
         stopped_reason = "未知"
+        stopped_code = "unknown"
         final_text = ""
         invocations: list[ToolInvocation] = []
         turns_used = max_turns
@@ -908,6 +930,8 @@ class AgentRunner:
         result = None
         turn_counts: dict[str, int] = {}
         run_error: BaseException | None = None
+        audit_writer: Any = None
+        audit_dir: Path | None = None
         # Caido bootstrap 与 sandbox bring-up 并发（strix 的
         # CaidoBootstrapHandle 模式）：proxy 工具首次调用时才经 handle.get()
         # 等待结果；由 session_manager 在 bundle 中一并给出。
@@ -989,6 +1013,22 @@ class AgentRunner:
                     configure_spill_writer,
                 )
 
+                try:
+                    from Ben.core.audit import AuditHooks, AuditWriter, audit_enabled
+
+                    if audit_enabled():
+                        audit_dir = Path(run_dir) / "audit"
+                        audit_writer = AuditWriter(
+                            audit_dir=audit_dir,
+                            run_name=str(Path(run_dir).name),
+                            target=str(target or ""),
+                        )
+                        await audit_writer.run_start()
+                except Exception:
+                    logger.debug("audit writer init failed", exc_info=True)
+                    audit_writer = None
+                    audit_dir = None
+
                 async def _spill_to_workspace(output_id: str, text: str) -> str | None:
                     path = f"{WORKSPACE_SPILL_DIR}/{output_id}.txt"
                     try:
@@ -996,6 +1036,14 @@ class AgentRunner:
                     except Exception:
                         logger.exception("failed to spill tool output to sandbox workspace")
                         return None
+                    # P3：容器存活期双写到宿主机 audit/tools/
+                    if audit_dir is not None:
+                        try:
+                            host_tools = audit_dir / "tools"
+                            host_tools.mkdir(parents=True, exist_ok=True)
+                            (host_tools / f"{output_id}.txt").write_text(text, encoding="utf-8")
+                        except Exception:
+                            logger.debug("audit spill dual-write failed", exc_info=True)
                     return path
 
                 configure_spill_writer(_spill_to_workspace)
@@ -1018,13 +1066,19 @@ class AgentRunner:
                     # 幻觉工具名是可恢复的模型错误：作为工具结果回传，让模型自我纠正
                     tool_not_found_behavior="return_error_to_model",
                 )
-                hooks = ReportUsageHooks(
+                usage_hooks = ReportUsageHooks(
                     model=resolved_model,
                     max_turns=max_turns,
                     max_budget_usd=self.max_budget_usd,
                     interactive=self.interactive,
                     record_tool_timings=settings.telemetry.run_record_timings,
                 )
+                if audit_writer is not None:
+                    from Ben.core.hooks import CompositeHooks
+
+                    hooks = CompositeHooks(usage_hooks, AuditHooks(audit_writer))
+                else:
+                    hooks = usage_hooks
 
                 root_agent = build_agent(
                     name="Root Agent",
@@ -1280,6 +1334,7 @@ class AgentRunner:
                 except MaxTurnsExceeded:
                     logger.info("[Runner] 达到最大轮数（%d），正常停止", max_turns)
                     stopped_reason = f"达到最大轮数（{max_turns} 轮）"
+                    stopped_code = "max_turns"
                     result = None
                 finally:
                     pause_watcher.cancel()
@@ -1288,6 +1343,11 @@ class AgentRunner:
                         await pause_watcher
                     with contextlib.suppress(asyncio.CancelledError):
                         await supervisor_task
+                    # 必须在容器销毁前拷贝；预算异常也会走这条 finally
+                    with contextlib.suppress(Exception):
+                        await _copy_kb_evidence(
+                            sandbox_session, report_state.get_run_dir()
+                        )
 
                 # 停止原因：completed 优先于 no_progress latch（M3）。
                 if stopped_reason == "未知":
@@ -1302,10 +1362,12 @@ class AgentRunner:
                         root_err = coordinator.errors.get(root_id, "")
                     if root_status == "completed":
                         stopped_reason = "模型调用 finish_scan 完成扫描"
+                        stopped_code = "finished"
                     elif (
                         isinstance(root_err, str) and "heartbeat stalled" in root_err
                     ) or no_progress_reason() == "heartbeat":
                         stopped_reason = "supervisor: heartbeat stalled"
+                        stopped_code = "stalled"
                     elif is_no_progress_latched():
                         n = no_progress_threshold()
                         stopped_reason = (
@@ -1313,19 +1375,24 @@ class AgentRunner:
                             if n > 0
                             else "无进展收尾"
                         )
+                        stopped_code = "finished"
                     elif root_status == "stopped":
                         stopped_reason = "达到最大轮数或被停止"
+                        stopped_code = "max_turns"
                     elif root_status in ("crashed", "failed"):
                         stopped_reason = f"Agent {root_status}：{str(root_err)[:200]}"
+                        stopped_code = "error"
                         # run_agent_loop 正常返回但 root 已被标记崩溃/失败，
                         # 同样属于异常终止，报告不得输出"未发现漏洞"结论。
                         run_error = run_error or RuntimeError(stopped_reason)
                     else:
                         stopped_reason = f"运行结束（root 状态：{root_status}）"
+                        stopped_code = "finished"
 
         except BudgetExceededError as exc:
             logger.info("扫描达到预算上限，停止：%s", exc)
             stopped_reason = f"预算上限：{exc}"
+            stopped_code = "budget"
             with contextlib.suppress(Exception):
                 await coordinator.set_status(root_id, "stopped")
         except Exception as exc:
@@ -1334,6 +1401,7 @@ class AgentRunner:
             # failure_text 对 str(exc) 为空串的异常（如 httpx.ReadTimeout）
             # 回退到类型名，保证终止原因永远可读。
             stopped_reason = f"运行错误：{request_log.failure_text(exc)}"
+            stopped_code = "error"
             with contextlib.suppress(Exception):
                 await coordinator.set_status(root_id, "failed")
 
@@ -1350,6 +1418,21 @@ class AgentRunner:
                 await mcp_registry.close()
             with contextlib.suppress(Exception):
                 await coordinator._maybe_snapshot()
+            # transcript finalize 必须在容器销毁前（spill 双写已落盘；此处收尾 index/md）
+            if audit_writer is not None:
+                with contextlib.suppress(Exception):
+                    from Ben.core.audit import load_events, render_markdown
+
+                    await audit_writer.run_end()
+                    events = load_events(audit_writer.audit_dir)
+                    md = render_markdown(events)
+                    (audit_writer.audit_dir / "transcript.md").write_text(md, encoding="utf-8")
+                    for aid, meta in audit_writer._agents.items():
+                        name = str(meta.get("name") or "agent").replace("/", "_")
+                        agent_md = render_markdown(events, agent=aid)
+                        (audit_writer.audit_dir / f"agent-{name}-{aid[:8]}.md").write_text(
+                            agent_md, encoding="utf-8"
+                        )
             # 对齐 strix 收尾：session_manager.cleanup 负责 Caido 关闭 +
             # client.delete 删容器 + docker client 关闭（best-effort，
             # 不让清理失败阻断下一次扫描）。async with 退出时的 aclose()
@@ -1463,6 +1546,11 @@ class AgentRunner:
                 turns_used=turns_used,
             )
 
+        if stopped_code == "unknown" and stopped_reason != "未知":
+            from Ben.core.stopped import stopped_code_from_reason
+
+            stopped_code = str(stopped_code_from_reason(stopped_reason))
+
         report_path, trace_path = self._persist(
             target,
             final_text,
@@ -1470,6 +1558,7 @@ class AgentRunner:
             stopped_reason,
             elapsed,
             agents_summary=agents_summary,
+            stopped_code=stopped_code,
         )
         return AgentRunResult(
             target=target,
@@ -1479,6 +1568,8 @@ class AgentRunner:
             turns_used=turns_used,
             stopped_reason=stopped_reason,
             invocations=invocations,
+            stopped_code=stopped_code,
+            audit_dir=audit_dir,
         )
 
     @staticmethod
@@ -1659,6 +1750,7 @@ class AgentRunner:
         elapsed: float,
         *,
         agents_summary: list[dict[str, Any]] | None = None,
+        stopped_code: str = "unknown",
     ) -> tuple[Path, Path]:
         """保存报告与执行轨迹。"""
         reports_dir = self.settings.reports_dir
@@ -1672,6 +1764,7 @@ class AgentRunner:
         trace = {
             "target": target,
             "stopped_reason": reason,
+            "stopped_code": stopped_code,
             "elapsed_seconds": round(elapsed, 3),
             "model": self.settings.llm.model,
             "tool_invocations": [
@@ -1689,3 +1782,107 @@ class AgentRunner:
         logger.info("报告已保存：%s", report_path)
         logger.info("轨迹已保存：%s", trace_path)
         return report_path, trace_path
+
+
+async def _copy_kb_evidence(sandbox_session: Any, run_dir: Path | None) -> dict[str, Any]:
+    """``BEN_KB_EVIDENCE=1`` 时把沙箱 ``/workspace/.evidence/`` 递归拷到 run 目录。
+
+    必须在容器销毁前调用。开关关闭时零 I/O。
+    返回 ``{enabled, copied, skipped, errors}`` 并写入 ``kb_evidence.json``。
+    """
+    from Ben.kb.env import env_flag
+
+    stats: dict[str, Any] = {
+        "enabled": False,
+        "copied": 0,
+        "skipped": 0,
+        "errors": [],
+    }
+    if not env_flag("BEN_KB_EVIDENCE"):
+        return stats
+    stats["enabled"] = True
+    if run_dir is None:
+        stats["errors"].append("run_dir is None")
+        return stats
+    dest = Path(run_dir) / ".evidence"
+    dest.mkdir(parents=True, exist_ok=True)
+
+    listing = await sandbox_session.exec(
+        "if [ -d /workspace/.evidence ]; then "
+        "find /workspace/.evidence -type f | sed 's|^/workspace/.evidence/||'; "
+        "fi",
+        shell=True,
+    )
+    rels: list[str] = []
+    if listing is not None and listing.ok():
+        text = (listing.stdout or b"").decode("utf-8", errors="replace")
+        rels = [ln.strip() for ln in text.splitlines() if ln.strip()]
+
+    copied = 0
+    skipped = 0
+    errors: list[str] = []
+    for rel in rels:
+        if (
+            not rel
+            or rel.startswith("/")
+            or ".." in Path(rel).parts
+            or rel in {".", ".."}
+        ):
+            skipped += 1
+            continue
+        src = Path("/workspace/.evidence") / rel
+        target = dest / rel
+        try:
+            handle = await sandbox_session.read(src)
+            data = handle.read() if hasattr(handle, "read") else handle
+            if isinstance(data, str):
+                data = data.encode("utf-8")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data or b"")
+            copied += 1
+        except FileNotFoundError:
+            skipped += 1
+            continue
+        except IsADirectoryError:
+            skipped += 1
+            errors.append(f"IsADirectoryError:{rel}")
+            logger.warning("KB 证据跳过目录项（应已被 find -type f 排除）：%s", rel)
+        except Exception as exc:
+            skipped += 1
+            errors.append(f"{type(exc).__name__}:{rel}")
+            logger.exception("拷贝 KB 证据失败：%s", rel)
+
+    stats["copied"] = copied
+    stats["skipped"] = skipped
+    stats["errors"] = errors
+    try:
+        (Path(run_dir) / "kb_evidence.json").write_text(
+            json.dumps(stats, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        run_json = Path(run_dir) / "run.json"
+        if run_json.is_file():
+            try:
+                record = json.loads(run_json.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                record = {}
+            if isinstance(record, dict):
+                record["kb_evidence"] = stats
+                run_json.write_text(
+                    json.dumps(record, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+    except OSError:
+        logger.exception("写入 kb_evidence.json 失败")
+        errors.append("write_stats_failed")
+        stats["errors"] = errors
+
+    if copied or skipped or errors:
+        logger.info(
+            "已拷贝 %d 个 KB 证据文件 → %s（跳过 %d，错误 %d）",
+            copied,
+            dest,
+            skipped,
+            len(errors),
+        )
+    return stats

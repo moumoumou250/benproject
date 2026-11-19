@@ -1,7 +1,8 @@
 """意图图 + DFS pick（Sapper 同构，裁剪到 Ben 最小集）。
 
 Fact 编码「见过什么」；Intent 编码「下一步干什么」并携带 profile。
-ready = open ∧ from 全部存在；pick = 依赖链最深者优先，同深取新。
+ready = open ∧ from 全部存在；pick = 依赖链最深者优先，同深取最老（FIFO）；
+``BEN_BREADTH_FIRST=1`` 时改为浅层优先。
 持久化 ``{state_dir}/task_graph.json``，模式对齐 coverage / claims。
 """
 
@@ -379,15 +380,38 @@ def _is_ready_locked(intent: dict[str, Any]) -> bool:
     return all(fid in _facts for fid in intent.get("from") or [])
 
 
+def _breadth_first_enabled() -> bool:
+    import os
+
+    return (os.environ.get("BEN_BREADTH_FIRST") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _ready_sort_key(intent: dict[str, Any]) -> tuple[float, float]:
+    """调度键。
+
+    - ``BEN_BREADTH_FIRST=1``：深度升序 + 同层老优先（先清浅层兄弟）。
+    - 默认：深度降序（DFS）+ **同层老优先**（不再 LIFO；parent_fact 缺失时全深
+      为 0，退化为 FIFO，正好先清侦察种子交回的面）。
+    """
+    depth = float(_depth_locked(intent))
+    created = float(intent.get("created_at") or 0.0)
+    if _breadth_first_enabled():
+        return (depth, created)
+    return (-depth, created)
+
+
 def pick(worker: str) -> dict[str, Any] | None:
-    """DFS pick：深度降序，同深按 created_at 降序；认领 intent → claimed。"""
+    """认领一条 ready intent → claimed。排序见 :func:`_ready_sort_key`。"""
     with _lock:
         ready = [i for i in _intents.values() if _is_ready_locked(i)]
         if not ready:
             return None
-        ready.sort(
-            key=lambda i: (-_depth_locked(i), -float(i.get("created_at") or 0.0))
-        )
+        ready.sort(key=_ready_sort_key)
         chosen = ready[0]
         chosen["status"] = "claimed"
         chosen["worker"] = worker
@@ -396,12 +420,10 @@ def pick(worker: str) -> dict[str, Any] | None:
 
 
 def peek_ready(limit: int = 8) -> list[dict[str, Any]]:
-    """只读：按 DFS 序返回前 N 个 ready intent（不认领）。"""
+    """只读：按当前调度序返回前 N 个 ready intent（不认领）。"""
     with _lock:
         ready = [dict(i) for i in _intents.values() if _is_ready_locked(i)]
-        ready.sort(
-            key=lambda i: (-_depth_locked(i), -float(i.get("created_at") or 0.0))
-        )
+        ready.sort(key=_ready_sort_key)
         out: list[dict[str, Any]] = []
         for intent in ready[: max(0, limit)]:
             row = dict(intent)
@@ -488,7 +510,7 @@ def select_next_intent(
     *,
     profiles: frozenset[str] | None = None,
 ) -> dict[str, Any] | None:
-    """只读选出 DFS 队首（不认领），供 create_agent 强制代领。"""
+    """只读选出调度队首（不认领），供 create_agent 强制代领。"""
     with _lock:
         ready = [i for i in _intents.values() if _is_ready_locked(i)]
         if profiles is not None:
@@ -497,9 +519,7 @@ def select_next_intent(
             ]
         if not ready:
             return None
-        ready.sort(
-            key=lambda i: (-_depth_locked(i), -float(i.get("created_at") or 0.0))
-        )
+        ready.sort(key=_ready_sort_key)
         chosen = ready[0]
         row = dict(chosen)
         row["depth"] = _depth_locked(chosen)

@@ -10,6 +10,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from Ben.core.paths import RUNS_DIR_NAME
+
 # 未命中 expect 时的退出码（与 fail_on=2、参数错=2 区分）。
 EXIT_EXPECT_MISS = 3
 
@@ -119,7 +121,7 @@ def format_debug_summary(
     expect_hits: dict[str, list[str]] | None = None,
 ) -> str:
     """面向终端的短摘要（指定漏洞调试用）。"""
-    lines: list[str] = ["=== 调试摘要 ===", f"run: strix_runs/{run_name}"]
+    lines: list[str] = ["=== 调试摘要 ===", f"run: {RUNS_DIR_NAME}/{run_name}"]
 
     sev_counts: dict[str, int] = {}
     for report in findings:
@@ -147,7 +149,9 @@ def format_debug_summary(
             else:
                 lines.append(f"  ✗ {pat!r} → MISS")
         if expect_ok is False and expect_missing:
-            lines.append(f"result: EXPECT MISS ({', '.join(expect_missing)}) → exit {EXIT_EXPECT_MISS}")
+            lines.append(
+                f"result: EXPECT MISS ({', '.join(expect_missing)}) → exit {EXIT_EXPECT_MISS}"
+            )
         elif expect_ok:
             lines.append("result: EXPECT OK")
 

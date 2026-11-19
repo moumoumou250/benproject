@@ -119,7 +119,12 @@ BenProject/
 │   └── docker-entrypoint.sh
 ├── scripts/
 │   └── smoke_core.py           # 核心模块导入 + 对象构造冒烟（不调用模型，0 token）
-└── reports/                    # report_*.md / trace_*.json 输出目录
+└── _artifacts/                 # 运行产物统一根（不入库）
+    ├── runs/                   # 每次扫描的完整记录（run.json / 日志 / 漏洞 / sarif）
+    ├── reports/                # report_*.md / trace_*.json 输出目录
+    ├── cache/                  # pytest / ruff 工具缓存
+    ├── tmp/                    # 临时校验与试验残留
+    └── envs/                   # 备用虚拟环境（可选）
 ```
 
 操作规范放在 `Ben/skills/`；知识资料通过 `Ben/rag/` 写入向量知识库并按需检索。
@@ -377,7 +382,11 @@ recon/<host>_<时间戳>_scout/
 
 ## 九、输出说明
 
-任务结束后在 `reports/` 生成两个文件（时间戳命名）：
+所有运行产物统一落在项目根的 `_artifacts/` 下（已在 `.gitignore` 中忽略）：
+扫描记录在 `_artifacts/runs/<run>/`，报告在 `_artifacts/reports/`，
+工具缓存在 `_artifacts/cache/`。
+
+任务结束后在 `_artifacts/reports/` 生成两个文件（时间戳命名）：
 
 - `report_YYYYMMDD_HHMMSS.md`：最终测试报告，含目标、实际操作、执行结果、
   证据、结论（已验证/疑似/未发现）、后续建议；
@@ -385,7 +394,7 @@ recon/<host>_<时间戳>_scout/
   结束原因，便于调试与复核。
 
 每次新报告落盘时，此前的历史 report/trace 自动按月份移入
-`reports/archive/YYYYMM/`，根部只保留最新一次产出。
+`_artifacts/reports/archive/YYYYMM/`，根部只保留最新一次产出。
 
 ## 十、安全约束
 
@@ -409,7 +418,7 @@ recon/<host>_<时间戳>_scout/
   超时与恢复）、工具层（注册/Schema/白名单/参数校验/对靶场真实执行）、入口链路、
   全部文件语法编译。
 - **已实际验证（含 Key）**：`--selftest-llm` 文本调用、function calling、
-  完整 Agent 多轮循环、对公网授权靶标的端到端报告（见 `reports/`）。
+  完整 Agent 多轮循环、对公网授权靶标的端到端报告（见 `_artifacts/reports/`）。
 - **已实际验证（MCP）**：stdio 连接经 `~/.ben/mcp-servers.json` 直连 node.exe
   启动官方 filesystem 服务器；list/search/schema/call 四步派发实测通过。
 - 注：本项目在 Windows 上运行时，项目目录不得带 Low 完整性级别标签
@@ -482,7 +491,7 @@ cd ../../../..
 
 浏览器会自动打开本地 React 控制台（默认 8765 端口）。也可使用终端打印的完整链接打开。
 输入已授权的网站 URL，选择测试模式、轮数、预算，填写测试要求后启动。
-页面显示执行日志，可进入实时进度、漏洞与报告视图；历史记录保存在 `strix_runs/`。
+页面显示执行日志，可进入实时进度、漏洞与报告视图；历史记录保存在 `_artifacts/runs/`。
 使用现有模型和 Docker 配置，无需另填 API key。`--no-open` 禁止自动打开浏览器，
 `--port 端口号` 指定端口。关闭控制台不会终止已启动的扫描。
 

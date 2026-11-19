@@ -23,7 +23,18 @@ from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
-_BRIEF_FACT_CAP = 24
+# 按 kind 配额，避免 surface 路径挤掉全部 endpoint（覆盖完整性 P1-1）。
+_BRIEF_KIND_QUOTAS: dict[str, int] = {
+    "host": 2,
+    "service": 8,
+    "http": 4,
+    "tls": 2,
+    "surface": 8,
+    "endpoint": 12,
+    "param": 4,
+    "note": 4,
+}
+_BRIEF_FACT_CAP = sum(_BRIEF_KIND_QUOTAS.values())  # 44；兼容旧测试名
 _TITLE_CAP = 90
 _JSON_NAMES = ("scout.json", "recon.json")
 
@@ -288,11 +299,20 @@ def render_seed_brief(bundle: SeedBundle) -> str:
             f.title,
         ),
     )
-    for fact in ranked[:_BRIEF_FACT_CAP]:
+    used_by_kind: dict[str, int] = {}
+    shown = 0
+    for fact in ranked:
+        quota = _BRIEF_KIND_QUOTAS.get(fact.kind)
+        if quota is not None and used_by_kind.get(fact.kind, 0) >= quota:
+            continue
+        if shown >= _BRIEF_FACT_CAP:
+            break
         detail = _short_data(fact.data)
         title = fact.title if len(fact.title) <= _TITLE_CAP else fact.title[: _TITLE_CAP - 1] + "…"
         lines.append(f"- [{fact.kind}] {title}" + (f" — {detail}" if detail else ""))
-    omitted = len(ranked) - _BRIEF_FACT_CAP
+        used_by_kind[fact.kind] = used_by_kind.get(fact.kind, 0) + 1
+        shown += 1
+    omitted = len(ranked) - shown
     if omitted > 0:
         lines.append(f"- … {omitted} more fact(s) in `/workspace/preseed/facts.json`")
 

@@ -34,3 +34,7 @@ def test_root_skill_renders_coverage_reconciliation_conditionally(coverage_tools
     prompt = render_system_prompt(is_root=True, coverage_tools=coverage_tools)
     assert ("## Reconcile Coverage Before Finishing" in prompt) is coverage_tools
     assert "{% if coverage_tools %}" not in prompt
+    if coverage_tools:
+        assert "system-assigned work" in prompt
+        assert "`pending`" in prompt or "pending" in prompt
+        assert "bulk_close_coverage" in prompt

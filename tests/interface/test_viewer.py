@@ -10,7 +10,7 @@ import urllib.request
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
-from Ben.core.paths import latest_run_dir, runs_base_dir
+from Ben.core.paths import RUNS_DIR_NAME, latest_run_dir, runs_base_dir
 from Ben.interface.viewer.cli import _state_label, run_view
 from Ben.interface.viewer.server import serve
 from Ben.interface.viewer.transcript import (
@@ -20,7 +20,6 @@ from Ben.interface.viewer.transcript import (
     read_vulnerabilities,
 )
 
-
 if TYPE_CHECKING:
     from collections.abc import Mapping
     from pathlib import Path
@@ -29,7 +28,7 @@ if TYPE_CHECKING:
 
 
 def _make_run(base: Path, name: str, *, status: str, end_time: str | None) -> Path:
-    run_dir = base / "strix_runs" / name
+    run_dir = base / RUNS_DIR_NAME / name
     state_dir = run_dir / ".state"
     state_dir.mkdir(parents=True)
     record = {"run_name": name, "status": status, "end_time": end_time}
@@ -46,7 +45,7 @@ def _make_run(base: Path, name: str, *, status: str, end_time: str | None) -> Pa
 def test_latest_run_dir_none_when_no_runs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     assert latest_run_dir() is None
-    assert runs_base_dir() == tmp_path / "strix_runs"
+    assert runs_base_dir() == tmp_path / RUNS_DIR_NAME
 
 
 def test_view_cli_help_includes_host(capsys: pytest.CaptureFixture[str]) -> None:

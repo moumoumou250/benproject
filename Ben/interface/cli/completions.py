@@ -5,10 +5,21 @@ from __future__ import annotations
 import sys
 from typing import Any
 
-from Ben.core.paths import run_record_path, runs_base_dir
+from Ben.core.paths import all_run_dirs, run_record_path
 from Ben.interface.terminal.text import has_terminal_control, sanitize_terminal_text
 
-_ROOT_COMMANDS = ("view", "completions", "completion", "preflight", "recon", "scout", "vuln")
+_ROOT_COMMANDS = (
+    "view",
+    "transcript",
+    "completions",
+    "completion",
+    "preflight",
+    "recon",
+    "scout",
+    "vuln",
+    "skill",
+    "eval",
+)
 _VIEW_FLAGS = ("--port", "--host", "--no-open", "-h", "--help")
 _VIEW_VALUE_FLAGS = frozenset({"--port", "--host"})
 _PREFLIGHT_FLAGS = (
@@ -161,6 +172,8 @@ def completion_candidates(words: list[str]) -> list[str]:
         candidates = _recon_candidates(prior[1:], current)
     elif prior[0] == "vuln":
         candidates = _vuln_candidates(prior[1:], current)
+    elif prior[0] == "skill":
+        candidates = _skill_candidates(prior[1:], current)
     elif prior[0] == "scout":
         candidates = _scout_candidates(prior[1:], current)
     else:
@@ -207,6 +220,34 @@ def _vuln_candidates(prior: list[str], current: str) -> list[str]:
     return _matching(_vuln_types(), current)
 
 
+_SKILL_VERBS = ("check", "diagnose", "verify")
+_SKILL_FLAGS = (
+    "--all",
+    "--strict",
+    "--json",
+    "--variant",
+    "--strict-contract",
+    "--profile",
+    "-h",
+    "--help",
+)
+_SKILL_VALUE_FLAGS = frozenset({"--variant", "--profile"})
+
+
+def _skill_candidates(prior: list[str], current: str) -> list[str]:
+    """``ben skill``：动词 + vuln 类型名 + 公共 flag。"""
+    if not prior:
+        return _matching(_SKILL_VERBS, current)
+    if prior and prior[-1] in _SKILL_VALUE_FLAGS:
+        return []
+    if current.startswith("-"):
+        return _matching(_SKILL_FLAGS, current)
+    # 动词后补类型名
+    if prior[0] in _SKILL_VERBS:
+        return _matching(_vuln_types(), current)
+    return _matching(_SKILL_VERBS, current)
+
+
 def _vuln_types() -> list[str]:
     """Available vulnerability types; empty when the skills dir is unavailable."""
     try:
@@ -227,11 +268,8 @@ def _scout_candidates(prior: list[str], current: str) -> list[str]:
 
 
 def _run_names() -> list[str]:
-    base = runs_base_dir()
-    if not base.is_dir():
-        return []
     return sorted(
-        (child.name for child in base.iterdir() if run_record_path(child).is_file()),
+        (run_dir.name for run_dir in all_run_dirs() if run_record_path(run_dir).is_file()),
         reverse=True,
     )
 

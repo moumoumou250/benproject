@@ -38,6 +38,7 @@ _ENTRY_ID_GENERATION_ATTEMPTS = 1024
 _EVIDENCE_PREVIEW_CHARS = 240
 
 VALID_OUTCOMES: tuple[str, ...] = (
+    "pending",
     "reported",
     "no_issue_found",
     "ruled_out",
@@ -45,7 +46,15 @@ VALID_OUTCOMES: tuple[str, ...] = (
     "needs_follow_up",
 )
 
-_OUTCOMES_REQUIRING_EVIDENCE = frozenset({"ruled_out", "not_applicable", "needs_follow_up"})
+# pending 必须带来源证据，但只允许运行时 seed，禁止 agent 经 record_coverage 写入。
+_OUTCOMES_REQUIRING_EVIDENCE = frozenset(
+    {"pending", "ruled_out", "not_applicable", "needs_follow_up"}
+)
+_AGENT_FORBIDDEN_OUTCOMES = frozenset({"pending"})
+# 批量关账：只许把 pending 标成 not_applicable（从未测过不能宣称 no_issue_found）
+_BULK_CLOSE_OUTCOMES = frozenset({"not_applicable"})
+_BULK_CLOSE_MAX = 40
+_BULK_CLOSE_MIN_EVIDENCE = 24
 
 
 def _caller_identity(ctx: RunContextWrapper) -> tuple[str | None, str | None]:
@@ -188,6 +197,52 @@ def _duplicate_of_locked(surface: str, risk_area: str) -> tuple[str, dict[str, A
     return None
 
 
+def seed_pending_entries(items: list[dict[str, Any]]) -> int:
+    """运行时灌入 inventory 行（outcome=pending）。幂等：同 surface+risk 已存在则跳过。
+
+    Agent 不能调用此函数；``record_coverage`` 禁止写 ``pending``。
+    每项至少含 ``surface`` / ``risk_area`` / ``evidence``（来源说明）。
+    返回新写入条数。
+    """
+    seeded = 0
+    with _coverage_lock:
+        for raw in items:
+            if not isinstance(raw, dict):
+                continue
+            surface = str(raw.get("surface") or "").strip()
+            risk_area = str(raw.get("risk_area") or "").strip()
+            evidence = str(raw.get("evidence") or "").strip()
+            if not surface or not risk_area:
+                continue
+            if not evidence:
+                evidence = "inventory seed (source unspecified)"
+            if _duplicate_of_locked(surface, risk_area) is not None:
+                continue
+            entry_id = _generate_entry_id()
+            if entry_id is None:
+                logger.error("seed_pending_entries: could not allocate entry id")
+                break
+            entry: dict[str, Any] = {
+                "surface": surface,
+                "risk_area": risk_area,
+                "outcome": "pending",
+                "evidence": evidence,
+                "created_at": datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC"),
+                "source": "inventory",
+            }
+            discovered_by = raw.get("discovered_by")
+            if discovered_by:
+                entry["discovered_by"] = str(discovered_by)
+            kind = raw.get("kind")
+            if kind:
+                entry["kind"] = str(kind)
+            _coverage_storage[entry_id] = entry
+            seeded += 1
+        if seeded:
+            _persist_locked()
+    return seeded
+
+
 def _record_impl(
     *,
     surface: str,
@@ -200,6 +255,14 @@ def _record_impl(
     normalized, errors = _validate(
         surface=surface, risk_area=risk_area, outcome=outcome, evidence=evidence
     )
+    if normalized in _AGENT_FORBIDDEN_OUTCOMES:
+        return {
+            "success": False,
+            "error": (
+                "outcome 'pending' is reserved for runtime inventory seeding; "
+                "close a pending row with update_coverage(entry_id=..., outcome=...)"
+            ),
+        }
     if errors:
         return {"success": False, "error": "Validation failed", "errors": errors}
 
@@ -292,6 +355,13 @@ def _update_impl(
         normalized, errors = _validate(
             surface=surface, risk_area=risk_area, outcome=outcome, evidence=evidence
         )
+        if normalized in _AGENT_FORBIDDEN_OUTCOMES:
+            return {
+                "success": False,
+                "error": (
+                    "cannot move a row to 'pending'; that outcome is inventory-only"
+                ),
+            }
         if errors:
             return {"success": False, "error": "Validation failed", "errors": errors}
 
@@ -331,6 +401,125 @@ def _update_impl(
         "message": (
             f"'{surface}' ({risk_area}) moved from {previous_outcome} to {normalized}. "
             "The previous state is kept as history."
+        ),
+    }
+
+
+def _bulk_close_impl(
+    *,
+    pattern: str,
+    outcome: str,
+    evidence: str,
+    agent_id: str | None,
+    agent_name: str | None,
+    risk_area: str | None = None,
+) -> dict[str, Any]:
+    """按 surface 子串批量关闭 pending → not_applicable；写入 bulk 审计字段。"""
+    needle = (pattern or "").strip()
+    if len(needle) < 2:
+        return {
+            "success": False,
+            "error": "pattern must be at least 2 characters (surface substring)",
+        }
+    evidence_text = (evidence or "").strip()
+    if len(evidence_text) < _BULK_CLOSE_MIN_EVIDENCE:
+        return {
+            "success": False,
+            "error": (
+                f"evidence must be at least {_BULK_CLOSE_MIN_EVIDENCE} characters — "
+                "name why these surfaces are out of scope (e.g. static asset, "
+                "health probe, out of authorization)"
+            ),
+        }
+    normalized, errors = _validate(
+        surface="bulk",
+        risk_area="bulk",
+        outcome=outcome,
+        evidence=evidence_text,
+    )
+    if normalized not in _BULK_CLOSE_OUTCOMES:
+        return {
+            "success": False,
+            "error": (
+                "bulk_close_coverage only allows outcome 'not_applicable' "
+                "(pending rows were never tested — use update_coverage for "
+                "real assessments)"
+            ),
+        }
+    if errors:
+        return {"success": False, "error": "Validation failed", "errors": errors}
+
+    risk_filter = (risk_area or "").strip().lower() or None
+    closed: list[dict[str, str]] = []
+    skipped_cap = 0
+    with _coverage_lock:
+        candidates: list[tuple[str, dict[str, Any]]] = []
+        for entry_id, entry in _coverage_storage.items():
+            if str(entry.get("outcome") or "").lower() != "pending":
+                continue
+            surface = str(entry.get("surface") or "")
+            if needle.lower() not in surface.lower():
+                continue
+            if risk_filter and str(entry.get("risk_area") or "").strip().lower() != risk_filter:
+                continue
+            candidates.append((entry_id, entry))
+        candidates.sort(key=lambda pair: str(pair[1].get("surface") or "").lower())
+        if len(candidates) > _BULK_CLOSE_MAX:
+            skipped_cap = len(candidates) - _BULK_CLOSE_MAX
+            candidates = candidates[:_BULK_CLOSE_MAX]
+        stamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+        for entry_id, entry in candidates:
+            previous_outcome = str(entry.get("outcome") or "")
+            superseded: dict[str, Any] = {
+                "outcome": previous_outcome,
+                "recorded_at": entry.get("created_at", ""),
+            }
+            if entry.get("evidence"):
+                superseded["evidence"] = entry["evidence"]
+            history = entry.get("history")
+            entry["history"] = (
+                [*history, superseded] if isinstance(history, list) else [superseded]
+            )
+            entry["outcome"] = normalized
+            entry["updated_at"] = stamp
+            entry["evidence"] = evidence_text
+            entry["bulk_closed"] = True
+            entry["bulk_pattern"] = needle
+            if agent_id:
+                entry["agent_id"] = agent_id
+            if agent_name:
+                entry["agent_name"] = agent_name
+            closed.append(
+                {
+                    "entry_id": entry_id,
+                    "surface": str(entry.get("surface") or ""),
+                    "risk_area": str(entry.get("risk_area") or ""),
+                }
+            )
+        if closed:
+            _persist_locked()
+
+    logger.info(
+        "Coverage bulk_close: pattern=%r closed=%d skipped_cap=%d",
+        needle,
+        len(closed),
+        skipped_cap,
+    )
+    return {
+        "success": True,
+        "closed_count": len(closed),
+        "closed": closed,
+        "skipped_over_cap": skipped_cap,
+        "max_per_call": _BULK_CLOSE_MAX,
+        "outcome": normalized,
+        "message": (
+            f"Closed {len(closed)} pending row(s) matching {needle!r} as {normalized}. "
+            + (
+                f"{skipped_cap} more matched but exceed cap {_BULK_CLOSE_MAX}; "
+                "call again to continue."
+                if skipped_cap
+                else "These waivers appear under report bulk_waivers."
+            )
         ),
     }
 
@@ -430,6 +619,10 @@ async def record_coverage(
       candidate, and name the gap in ``evidence`` (missing credentials,
       service you could not start, unconfirmed reachability).
 
+    Do **not** record ``pending`` — that outcome is written only by the
+    runtime from recon/scout inventory. Close a pending row with
+    ``update_coverage`` instead.
+
     Never use ``no_issue_found`` or ``ruled_out`` to close something you
     were simply unsure about — that is ``needs_follow_up``. Missing
     information is not proof of safety.
@@ -481,8 +674,9 @@ async def update_coverage(
     state is not final when it is first written. Use this whenever
     later work changes the answer:
 
-    - You picked up someone's ``needs_follow_up`` and resolved it —
-      move it to ``reported``, ``ruled_out``, or ``no_issue_found``.
+    - You picked up a ``pending`` inventory row (or someone's
+      ``needs_follow_up``) and resolved it — move it to ``reported``,
+      ``ruled_out``, ``no_issue_found``, or ``not_applicable``.
     - You had the credentials or running service the original agent
       lacked, and could finally test it properly.
     - You found the control that rules a candidate out, at a location,
@@ -531,24 +725,70 @@ async def list_coverage(
     """List coverage entries recorded so far in this scan.
 
     **For the orchestrator / root agent.** Use it to see which surfaces
-    have been assessed, spot gaps before finishing, and pull the
-    unresolved ``needs_follow_up`` rows into the final report. Leaf
-    agents should record their own coverage and get on with testing.
+    have been assessed, spot gaps before finishing, and pull open
+    ``pending`` (inventory, never assessed) and ``needs_follow_up``
+    rows into the final report. Leaf agents should record their own
+    coverage and get on with testing.
 
     Returns each entry with its ``surface``, ``risk_area``, ``outcome``,
     evidence preview, and the agent that recorded it, plus
     ``outcome_counts`` across the whole scan.
 
     Args:
-        outcome: Optional filter — one of ``reported`` /
+        outcome: Optional filter — one of ``pending`` / ``reported`` /
             ``no_issue_found`` / ``ruled_out`` / ``not_applicable`` /
-            ``needs_follow_up``. Filter on ``needs_follow_up`` before
-            finishing the scan to see what is still open.
+            ``needs_follow_up``. Filter on ``pending`` and
+            ``needs_follow_up`` before finishing to see what is still open.
         surface: Optional case-insensitive substring filter on the
             surface name.
     """
     caller_agent_id, _ = _caller_identity(ctx)
     result = await asyncio.to_thread(
         _list_impl, outcome=outcome, surface=surface, caller_agent_id=caller_agent_id
+    )
+    return json.dumps(result, ensure_ascii=False, default=str)
+
+
+@function_tool(timeout=30)
+async def bulk_close_coverage(
+    ctx: RunContextWrapper,
+    pattern: str,
+    evidence: str,
+    outcome: str = "not_applicable",
+    risk_area: str | None = None,
+) -> str:
+    """Waive many ``pending`` inventory rows that are clearly out of scope.
+
+    Use this for static assets, health probes, or surfaces outside the
+    authorized scope — **not** as a shortcut to clear the ledger before
+    ``finish_scan``. Only ``pending`` rows matching ``pattern`` (surface
+    substring) are touched, and only ``not_applicable`` is allowed:
+    never-tested surfaces must not be marked ``no_issue_found``.
+
+    Each closed row keeps history and is stamped ``bulk_closed`` /
+    ``bulk_pattern`` so the report can list waivers under
+    ``bulk_waivers``. Cap is 40 rows per call; call again to continue.
+
+    For a real assessment of a surface, use ``update_coverage`` on its
+    ``entry_id`` instead.
+
+    Args:
+        pattern: Case-insensitive substring of ``surface`` (min 2 chars),
+            e.g. ``\".css\"``, ``\"/robots.txt\"``, ``\"favicon\"``.
+        evidence: Required (≥24 chars). Say why these matches are out of
+            scope — this text is what auditors read.
+        outcome: Must be ``not_applicable`` (default).
+        risk_area: Optional exact risk filter so you do not waive the
+            wrong angle on a shared surface.
+    """
+    agent_id, agent_name = _caller_identity(ctx)
+    result = await asyncio.to_thread(
+        _bulk_close_impl,
+        pattern=pattern,
+        outcome=outcome,
+        evidence=evidence,
+        agent_id=agent_id,
+        agent_name=agent_name,
+        risk_area=risk_area,
     )
     return json.dumps(result, ensure_ascii=False, default=str)

@@ -158,7 +158,12 @@ def _descriptions(tools: list[Any]) -> list[str]:
 
 
 def test_coverage_tools_can_be_turned_off() -> None:
-    coverage = {"record_coverage", "update_coverage", "list_coverage"}
+    coverage = {
+        "record_coverage",
+        "update_coverage",
+        "list_coverage",
+        "bulk_close_coverage",
+    }
     for is_root in (True, False):
         on = build_agent(is_root=is_root, is_whitebox=True)
         off = build_agent(is_root=is_root, is_whitebox=True, coverage_tools=False)

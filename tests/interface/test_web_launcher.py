@@ -1,9 +1,9 @@
 from pathlib import Path
-from unittest.mock import Mock
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
+from Ben.core.paths import RUNS_DIR_NAME
 from Ben.interface.viewer.launcher import ScanLauncher
 from Ben.interface.viewer.server import serve
 
@@ -64,7 +64,7 @@ def test_scan_api_requires_session(tmp_path):
     import requests
 
     launcher = ScanLauncher(tmp_path)
-    server, url, token = serve(tmp_path / "strix_runs/empty", open_browser=False, launcher=launcher)
+    server, url, token = serve(tmp_path / RUNS_DIR_NAME / "empty", open_browser=False, launcher=launcher)
     try:
         assert (
             requests.post(
@@ -114,7 +114,7 @@ def test_pause_resume_http_routes(tmp_path, monkeypatch):
     monkeypatch.setattr("Ben.interface.viewer.launcher.subprocess.Popen", Mock(return_value=process))
     launcher = ScanLauncher(tmp_path)
     launcher.start({"target": "http://example.com"})
-    server, url, token = serve(tmp_path / "strix_runs/empty", open_browser=False, launcher=launcher)
+    server, url, token = serve(tmp_path / RUNS_DIR_NAME / "empty", open_browser=False, launcher=launcher)
     try:
         session = requests.Session()
         session.get(url + "/?token=" + token, timeout=5).raise_for_status()

@@ -69,7 +69,9 @@ import contextlib
 import logging
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 # Windows asyncio 兼容
 if sys.platform == "win32":
@@ -178,6 +180,7 @@ def _selftest_llm() -> int:
     from agents import RunConfig, Runner
     from agents.agent import Agent
     from agents.items import MessageOutputItem
+
     from Ben.config.models import BenProvider, build_flash_model
 
     _INSTRUCTIONS = "你是连通性测试助手，用一句话回答。"
@@ -287,6 +290,7 @@ def _selftest_tools() -> int:
         return 1
 
     import asyncio
+
     import docker as docker_sdk
     from agents.sandbox.sandboxes.docker import DockerSandboxClient, DockerSandboxClientOptions
 
@@ -350,19 +354,19 @@ def findings_fail_build(reports: list[dict], fail_on: str | None) -> bool:
     return False
 
 
-def _run_task(args) -> int:
-    """完整 Agent 任务（SDK Runner + SDK Sandbox 驱动）。
+@dataclass
+class TaskOutcome:
+    """``_execute_task`` 的结构化结果（供 ``ben skill verify`` 读取，避免解析 stdout）。"""
 
-    流程（对齐 strix prepare_run 的 Ben 子集）：
-      args.targets_info（parse 阶段已分类/校验；resume 时已从 run.json 恢复）
-      → repository 目标 clone 到本地临时目录（resume 跳过，复用既有克隆）
-      → api_spec 目标 staging（只读放进 /workspace/api-specs）
-      → collect_local_sources（沙箱 bind mount 清单）
-      → --workspace-file 读取为 extra_files
-      → resolve_diff_scope_context（--scope-mode/--diff-base）
-      → diff instruction_block 前置拼入 instruction
-      → 构造 AgentRunner 并运行
-    """
+    exit_code: int
+    run_name: str | None = None
+    stopped_reason: str = ""
+    stopped_code: str = "unknown"
+    result: Any = None
+
+
+def _execute_task(args) -> TaskOutcome:
+    """完整 Agent 任务；返回结构化结果。``_run_task`` 是其薄壳。"""
     from Ben.interface.cli.environment import pull_docker_image, validate_environment
 
     validate_environment()
@@ -375,7 +379,7 @@ def _run_task(args) -> int:
 
         blocked = check_run_targets(args)
         if blocked is not None:
-            return blocked
+            return TaskOutcome(exit_code=blocked, stopped_code="error", stopped_reason="preflight")
 
     from Ben.interface.cli.scan_setup import PreparationError, prepare_run
 
@@ -383,7 +387,7 @@ def _run_task(args) -> int:
         prepared = prepare_run(args)
     except PreparationError as exc:
         print(f"[FAIL] {exc}")
-        return 1
+        return TaskOutcome(exit_code=1, stopped_code="error", stopped_reason=str(exc))
     targets_info = prepared["targets_info"]
     run_name = prepared["run_name"]
     resume_run_name = prepared["resume_run_name"]
@@ -391,10 +395,6 @@ def _run_task(args) -> int:
     if not targets_info:
         print("未指定目标，使用 .env 中 ALLOWED_TARGETS 的第一项（runner 内回退）")
 
-    # headless 实时视图（Ben.interface.cli.runner）内部构造 AgentRunner：
-    # - 复用同一份 ReportState，漏洞发现即打印面板（对齐 strix 的 run_cli）；
-    # - --verbose 时关闭 Live，避免日志与刷新互相覆盖；
-    # - 非 TTY（CI/重定向）时自动降级为纯文本输出。
     import asyncio
 
     from Ben.interface.cli.runner import run_cli
@@ -402,7 +402,7 @@ def _run_task(args) -> int:
     live = not bool(getattr(args, "verbose", False)) and sys.stdout.isatty()
     result = asyncio.run(run_cli(args, prepared, live=live))
 
-    from Ben.core.paths import run_dir_for
+    from Ben.core.paths import resolve_run_dir
     from Ben.interface.cli.debug_expect import (
         EXIT_EXPECT_MISS,
         format_debug_summary,
@@ -415,8 +415,30 @@ def _run_task(args) -> int:
     expect_patterns = normalize_expect_patterns(getattr(args, "expect", None))
     want_summary = bool(getattr(args, "debug_summary", False)) or bool(expect_patterns)
 
+    from Ben.core.stopped import StoppedCode, coerce_stopped_code, stopped_code_from_reason
+
+    stopped_reason = getattr(result, "stopped_reason", "") if result is not None else "无最终结果"
+    raw_code = getattr(result, "stopped_code", None) if result is not None else None
+    stopped_code = str(
+        coerce_stopped_code(raw_code)
+        if raw_code and raw_code != "unknown"
+        else stopped_code_from_reason(stopped_reason)
+    )
+    # result is None 不等于预算耗尽：崩溃/中断也会落到这里。
+    # 没有明确 stopped_code 时保持 unknown，禁止默认写成 budget
+    # （否则 verify 会误判 INCONCLUSIVE/BUDGET，把排查引到调预算上）。
+    if result is None and stopped_code in {StoppedCode.UNKNOWN, "unknown"}:
+        reason_low = (stopped_reason or "").lower()
+        if "预算" in (stopped_reason or "") or "budget" in reason_low:
+            stopped_code = str(StoppedCode.BUDGET)
+        else:
+            stopped_code = str(StoppedCode.UNKNOWN)
+
     if result is None:
-        print("[INFO] 本次运行未产出最终结果（预算耗尽或被中断），详见 strix_runs 目录。")
+        print(
+            "[INFO] 本次运行未产出最终结果（中断、错误或预算耗尽），"
+            f"stopped_code={stopped_code}；详见 _artifacts/runs 目录。"
+        )
     else:
         print("\n" + "=" * 70)
         print(result.report_text)
@@ -427,7 +449,7 @@ def _run_task(args) -> int:
 
     findings: list = []
     if effective_run_name:
-        findings = load_findings_json(run_dir_for(effective_run_name) / "vulnerabilities.json")
+        findings = load_findings_json(resolve_run_dir(effective_run_name) / "vulnerabilities.json")
     elif result is not None:
         findings = load_findings_json(result.report_path.parent / "vulnerabilities.json")
 
@@ -451,16 +473,38 @@ def _run_task(args) -> int:
             )
         )
 
-    # expect 优先于 fail_on：调试「必须检出」时先报未命中。
     if expect_patterns and expect_ok is False:
         print(f"[FAIL] --expect 未全部命中：{', '.join(expect_missing)}；退出码 {EXIT_EXPECT_MISS}")
-        return EXIT_EXPECT_MISS
+        return TaskOutcome(
+            exit_code=EXIT_EXPECT_MISS,
+            run_name=effective_run_name,
+            stopped_reason=stopped_reason,
+            stopped_code=stopped_code,
+            result=result,
+        )
 
     fail_on = getattr(args, "fail_on", None)
     if fail_on is not None and findings_fail_build(findings, fail_on):
         print(f"[FAIL] 存在 {fail_on} 及以上等级漏洞，退出码 2")
-        return 2
-    return 0
+        return TaskOutcome(
+            exit_code=2,
+            run_name=effective_run_name,
+            stopped_reason=stopped_reason,
+            stopped_code=stopped_code,
+            result=result,
+        )
+    return TaskOutcome(
+        exit_code=0,
+        run_name=effective_run_name,
+        stopped_reason=stopped_reason,
+        stopped_code=stopped_code,
+        result=result,
+    )
+
+
+def _run_task(args) -> int:
+    """完整 Agent 任务（SDK Runner + SDK Sandbox 驱动）—— ``_execute_task`` 薄壳。"""
+    return _execute_task(args).exit_code
 
 
 def _apply_runtime_env(args) -> None:
@@ -484,6 +528,10 @@ def main() -> int:
         from Ben.interface.viewer.cli import run_view
 
         return run_view(sys.argv[2:])
+    if len(sys.argv) > 1 and sys.argv[1] == "transcript":
+        from Ben.interface.cli.transcript import run_transcript
+
+        return run_transcript(sys.argv[2:])
     if len(sys.argv) > 1 and sys.argv[1] in ("completion", "completions"):
         from Ben.interface.cli.completions import run_completions
 
@@ -505,6 +553,14 @@ def main() -> int:
 
         # 传入 _run_task，避免以 `__main__` 运行时二次导入本模块。
         return run_vuln(sys.argv[2:], run_task=_run_task)
+    if len(sys.argv) > 1 and sys.argv[1] == "skill":
+        from Ben.interface.cli.skill import run_skill
+
+        return run_skill(sys.argv[2:])
+    if len(sys.argv) > 1 and sys.argv[1] == "eval":
+        from Ben.interface.cli.eval_suite import run_eval
+
+        return run_eval(sys.argv[2:])
 
     args = parse_arguments()
 

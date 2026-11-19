@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from typing import TYPE_CHECKING, Any
 
 from Ben.core.agents import ACTIVE_STATUSES, TERMINAL_STATUSES
@@ -46,6 +47,27 @@ _RISK_SUGGEST: dict[str, tuple[str, str, int]] = {
     "recon": ("reconnaissance", "scout", 10),
     "validation": ("", "validator", 10),
 }
+
+# Ready 排序：数值越小越优先（401/403、auth/authz 靠前；静态 enum 沉底）
+_RISK_READY_RANK: dict[str, int] = {
+    "auth": 0,
+    "authz": 1,
+    "idor": 1,
+    "sqli": 2,
+    "sql_injection": 2,
+    "xss": 2,
+    "ssrf": 3,
+    "validation": 4,
+    "recon": 7,
+    "enum": 8,
+}
+_STATIC_SURFACE = re.compile(
+    r"(?:^|/)(?:robots\.txt|sitemap(?:\.xml)?|favicon\.ico|manifest\.json|"
+    r"apple-touch-icon|[^?\s]+\.(?:css|js|map|woff2?|ttf|ico|png|jpg|jpeg|gif|svg|webp))"
+    r"(?:$|\?)",
+    re.IGNORECASE,
+)
+_STATUS_IN_EVIDENCE = re.compile(r"status\s*=\s*(\d{3})", re.IGNORECASE)
 
 # 按 agent_id 记住上次注入的 frontier 签名，签名不变则跳过。
 _last_frontier_sig: dict[str, str] = {}
@@ -135,19 +157,58 @@ def _open_todos() -> list[dict[str, Any]]:
         return []
 
 
+_OPEN_COVERAGE_OUTCOMES: frozenset[str] = frozenset({"pending", "needs_follow_up"})
+
+
 def _coverage_gaps(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """未关闭的账本行：pending（没试过）与 needs_follow_up（试过没结论）。"""
     gaps: list[dict[str, Any]] = []
     for entry in entries:
-        if str(entry.get("outcome") or "") != "needs_follow_up":
+        outcome = str(entry.get("outcome") or "").strip().lower()
+        if outcome not in _OPEN_COVERAGE_OUTCOMES:
             continue
         gaps.append(
             {
                 "surface": entry.get("surface", ""),
                 "risk_area": entry.get("risk_area", ""),
-                "detail": entry.get("evidence") or "needs follow-up",
+                "outcome": outcome,
+                "entry_id": entry.get("entry_id", ""),
+                "detail": entry.get("evidence")
+                or ("pending inventory" if outcome == "pending" else "needs follow-up"),
             }
         )
     return gaps
+
+
+def _parse_status_hint(detail: str) -> int | None:
+    match = _STATUS_IN_EVIDENCE.search(detail or "")
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def ready_sort_key(gap: dict[str, Any]) -> tuple[int, int, int, int, str]:
+    """Ready 优先级：非静态 → 高价值 risk → 401/403 → 动态 200 → 其余。"""
+    surface = str(gap.get("surface") or "")
+    risk = str(gap.get("risk_area") or "").strip().lower()
+    detail = str(gap.get("detail") or "")
+    static_rank = 1 if _STATIC_SURFACE.search(surface) else 0
+    risk_rank = _RISK_READY_RANK.get(risk, 5)
+    status = _parse_status_hint(detail)
+    if status in {401, 403}:
+        status_rank = 0
+    elif status in {200, 201, 204, 405}:
+        status_rank = 1
+    elif status in {301, 302}:
+        status_rank = 2
+    else:
+        status_rank = 3
+    # needs_follow_up 略优先于 pending（已有人 dig 过，别丢线索）
+    outcome_rank = 0 if str(gap.get("outcome") or "") == "needs_follow_up" else 1
+    return (static_rank, risk_rank, status_rank, outcome_rank, surface.lower())
 
 
 def _agent_lines(coordinator: AgentCoordinator | None) -> list[str]:
@@ -170,7 +231,7 @@ def _agent_lines(coordinator: AgentCoordinator | None) -> list[str]:
     return lines
 
 
-def _suggest_line(surface: str, risk: str) -> str:
+def _suggest_line(surface: str, risk: str, *, entry_id: str = "") -> str:
     # L4：json.dumps，避免 surface 含引号时 Python repr 破形。
     import json
 
@@ -178,14 +239,17 @@ def _suggest_line(surface: str, risk: str) -> str:
     skill, tier, minutes = _RISK_SUGGEST.get(key, ("", "hunter", 15))
     name = f"{risk or 'task'} @ {surface}"[:40]
     skill_list = [skill] if skill else []
-    return (
-        "  suggest: "
-        f"name={json.dumps(name, ensure_ascii=False)} "
-        f"skills={json.dumps(skill_list, ensure_ascii=False)} "
-        f"tier={json.dumps(tier, ensure_ascii=False)} minutes={minutes} "
-        f"surface={json.dumps(surface, ensure_ascii=False)} "
-        f"risk_area={json.dumps(risk, ensure_ascii=False)}"
-    )
+    parts = [
+        "  suggest: ",
+        f"name={json.dumps(name, ensure_ascii=False)} ",
+        f"skills={json.dumps(skill_list, ensure_ascii=False)} ",
+        f"tier={json.dumps(tier, ensure_ascii=False)} minutes={minutes} ",
+        f"surface={json.dumps(surface, ensure_ascii=False)} ",
+        f"risk_area={json.dumps(risk, ensure_ascii=False)}",
+    ]
+    if entry_id:
+        parts.append(f" coverage_entry_id={json.dumps(entry_id, ensure_ascii=False)}")
+    return "".join(parts)
 
 
 def _claimed_keys() -> dict[tuple[str, str], dict[str, Any]]:
@@ -258,8 +322,9 @@ def render_frontier_block(
         if key in claims:
             continue
         ready.append(gap)
+    ready.sort(key=ready_sort_key)
 
-    # DFS Next：task_graph 的 ready intents（不认领，只提示）。有内容时 Ready 降级。
+    # DFS Next 与 Ready 并排：各占预算，DFS 非空时不再折叠 Ready（P0.5）。
     dfs_lines = ["## Next (DFS order)"]
     dfs_ready: list[dict[str, Any]] = []
     try:
@@ -290,33 +355,27 @@ def render_frontier_block(
         logger.debug("frontier: task_graph peek failed", exc_info=True)
         dfs_lines.append("- (unavailable)")
 
-    if dfs_ready:
-        # DFS 非空：折叠 Ready，避免双建议源竞争。
-        ready_lines = [
-            "## Ready (unclaimed needs_follow_up)",
-            (
-                f"- Ready: {len(ready)} coverage gap(s) deferred; follow DFS Next "
-                "(create_agent with intent_id / profile=recon|enum)."
-            ),
-        ]
-    else:
-        ready_lines = ["## Ready (unclaimed needs_follow_up)"]
-        if ready:
-            for gap in ready[:_MAX_READY_ROWS]:
-                surface = clip_line(str(gap.get("surface") or "?"), 40)
-                risk = clip_line(str(gap.get("risk_area") or "?"), 30)
-                ready_lines.append(f"- {surface} · {risk}")
-                ready_lines.append(
-                    _suggest_line(
-                        str(gap.get("surface") or ""),
-                        str(gap.get("risk_area") or ""),
-                    )
+    ready_lines = ["## Ready (unclaimed pending / needs_follow_up)"]
+    if ready:
+        for gap in ready[:_MAX_READY_ROWS]:
+            surface = clip_line(str(gap.get("surface") or "?"), 40)
+            risk = clip_line(str(gap.get("risk_area") or "?"), 30)
+            outcome = str(gap.get("outcome") or "open")
+            entry_id = str(gap.get("entry_id") or "")
+            id_bit = f" · id={entry_id}" if entry_id else ""
+            ready_lines.append(f"- [{outcome}] {surface} · {risk}{id_bit}")
+            ready_lines.append(
+                _suggest_line(
+                    str(gap.get("surface") or ""),
+                    str(gap.get("risk_area") or ""),
+                    entry_id=entry_id,
                 )
-            omitted = len(ready) - _MAX_READY_ROWS
-            if omitted > 0:
-                ready_lines.append(f"- … {omitted} more Ready; call list_coverage")
-        else:
-            ready_lines.append("- (none)")
+            )
+        omitted = len(ready) - _MAX_READY_ROWS
+        if omitted > 0:
+            ready_lines.append(f"- … {omitted} more Ready; call list_coverage")
+    else:
+        ready_lines.append("- (none)")
 
     claimed_lines = ["## Claimed"]
     if claims:

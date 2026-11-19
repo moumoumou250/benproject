@@ -1,6 +1,6 @@
 ---
 name: fix-security-vulnerabilities-with-ben
-description: Fix security vulnerabilities found by a Ben pentest — triage by severity, patch the root cause rather than the symptom, and re-run Ben to prove each fix actually closes the exploit. Handles injection, XSS, SSRF, broken access control, IDOR, and other validated findings. Use after a Ben scan reports findings, or when the user asks to remediate, patch, or fix security issues from a strix_runs report, vulnerabilities.json, findings.sarif.
+description: Fix security vulnerabilities found by a Ben pentest — triage by severity, patch the root cause rather than the symptom, and re-run Ben to prove each fix actually closes the exploit. Handles injection, XSS, SSRF, broken access control, IDOR, and other validated findings. Use after a Ben scan reports findings, or when the user asks to remediate, patch, or fix security issues from a _artifacts/runs report, vulnerabilities.json, findings.sarif.
 license: Apache-2.0
 metadata:
   author: useben
@@ -18,7 +18,7 @@ Turn validated Ben findings into minimal, correct fixes — and prove they work 
 
 Get the findings from wherever the scan ran:
 
-- **OSS CLI** — artifacts in `strix_runs/<run-name>/`:
+- **OSS CLI** — artifacts in `_artifacts/runs/<run-name>/`:
   - `vulnerabilities/*.md` — one finding per file: description, severity, PoC steps or script, affected code locations, remediation guidance.
   - `vulnerabilities.json` — the same findings as JSON (ids, severity, CWE/CVE, `code_locations` with `fix_before`/`fix_after` suggestions when available).
 
@@ -62,7 +62,7 @@ python main.py -n -t ./ --scan-mode quick --scope-mode diff --diff-base "$DIFF_B
 # Or re-test with the original finding as focus (no diff base needed)
 python main.py -n -t ./ --instruction "Verify the SQL injection in app/api/search.py is fixed. Original PoC: <poc>" --max-budget 5
 ```
-Exit codes: `2` = findings remain (read the new `strix_runs/<run>/vulnerabilities/` and iterate); `0` = clean **for what was analyzed**. Before trusting a `0`, confirm the run wasn't cut short — check `run.json` for a completed status and compare its `llm_usage.cost` with `--max-budget`: a hard budget stop leaves `status: "stopped"`, but a run that wrapped up on a budget warning records `"completed"` with partial coverage. Give verification enough budget to finish, and prefer re-running the specific PoC as the ground-truth signal.
+Exit codes: `2` = findings remain (read the new `_artifacts/runs/<run>/vulnerabilities/` and iterate); `0` = clean **for what was analyzed**. Before trusting a `0`, confirm the run wasn't cut short — check `run.json` for a completed status and compare its `llm_usage.cost` with `--max-budget`: a hard budget stop leaves `status: "stopped"`, but a run that wrapped up on a budget warning records `"completed"` with partial coverage. Give verification enough budget to finish, and prefer re-running the specific PoC as the ground-truth signal.
 
 - Also re-run the PoC manually when it is a simple request/script — fastest signal.
 - Run the project's own test suite to make sure the fix does not break behavior.

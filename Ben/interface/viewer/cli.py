@@ -11,10 +11,10 @@ from rich.console import Console
 
 from Ben.core.paths import (
     RUNS_DIR_NAME,
+    all_run_dirs,
     latest_run_dir,
-    run_dir_for,
+    resolve_run_dir,
     run_record_path,
-    runs_base_dir,
 )
 from Ben.interface.viewer.server import authorized_url, bundle_is_built, serve
 from Ben.interface.viewer.transcript import read_run_summary
@@ -114,7 +114,7 @@ def _state_label(summary: dict[str, object]) -> str:
 
 def _resolve_run_dir(run: str | None, console: Console) -> Path:
     if run:
-        run_dir = run_dir_for(run)
+        run_dir = resolve_run_dir(run)
         if not run_record_path(run_dir).is_file():
             _fail_no_run(console, requested=run)
         return run_dir
@@ -126,14 +126,9 @@ def _resolve_run_dir(run: str | None, console: Console) -> Path:
 
 
 def _fail_no_run(console: Console, *, requested: str | None) -> NoReturn:
-    base = runs_base_dir()
-    available = (
-        sorted(
-            (child.name for child in base.iterdir() if run_record_path(child).is_file()),
-            reverse=True,
-        )
-        if base.is_dir()
-        else []
+    available = sorted(
+        (run_dir.name for run_dir in all_run_dirs() if run_record_path(run_dir).is_file()),
+        reverse=True,
     )
 
     if requested:

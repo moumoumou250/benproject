@@ -48,6 +48,7 @@ __all__ = [
     "BudgetExceededError",
     "BudgetPausedError",
     "BudgetPolicy",
+    "CompositeHooks",
     "ReportUsageHooks",
     "SubagentBudgetReservedError",
     "recomputed_budget_flags",
@@ -175,6 +176,54 @@ def _agent_model_name(agent: Agent[dict[str, Any]]) -> str | None:
         return model
     name = getattr(model, "model", None)
     return name if isinstance(name, str) and name else None
+
+
+class CompositeHooks(RunHooks[dict[str, Any]]):
+    """Fan-out RunHooks；审计写失败可吞，预算等控制流异常必须上抛。"""
+
+    _CONTROL = (BudgetExceededError, SubagentBudgetReservedError, BudgetPausedError)
+
+    def __init__(self, *hooks: RunHooks[dict[str, Any]]) -> None:
+        self._hooks = hooks
+
+    async def _fanout(self, method: str, *args: Any, **kwargs: Any) -> None:
+        for hook in self._hooks:
+            fn = getattr(hook, method, None)
+            if fn is None:
+                continue
+            try:
+                await fn(*args, **kwargs)
+            except self._CONTROL:
+                raise
+            except Exception:
+                logger.debug("CompositeHooks.%s suppressed error from %s", method, type(hook).__name__, exc_info=True)
+
+    async def on_agent_start(self, context: Any, agent: Any) -> None:
+        await self._fanout("on_agent_start", context, agent)
+
+    async def on_agent_end(self, context: Any, agent: Any, output: Any) -> None:
+        await self._fanout("on_agent_end", context, agent, output)
+
+    async def on_llm_start(
+        self,
+        context: Any,
+        agent: Any,
+        system_prompt: str | None,
+        input_items: list[Any],
+    ) -> None:
+        await self._fanout("on_llm_start", context, agent, system_prompt, input_items)
+
+    async def on_llm_end(self, context: Any, agent: Any, response: Any) -> None:
+        await self._fanout("on_llm_end", context, agent, response)
+
+    async def on_tool_start(self, context: Any, agent: Any, tool: Any) -> None:
+        await self._fanout("on_tool_start", context, agent, tool)
+
+    async def on_tool_end(self, context: Any, agent: Any, tool: Any, result: object) -> None:
+        await self._fanout("on_tool_end", context, agent, tool, result)
+
+    async def on_handoff(self, context: Any, from_agent: Any, to_agent: Any) -> None:
+        await self._fanout("on_handoff", context, from_agent, to_agent)
 
 
 class ReportUsageHooks(RunHooks[dict[str, Any]]):

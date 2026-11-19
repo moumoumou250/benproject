@@ -43,7 +43,7 @@ python main.py --selftest-llm        # real model call — needs .env
 # A scan; README §八 has the full flag list
 python main.py http://target.example:8080/    # URL 必须在 .env 的 ALLOWED_TARGETS 内；未配置则拒绝启动
 python main.py -n -t <url> -m quick --max-turns 20 --max-budget 1 --instruction "..."
-python main.py -r <run_name>                    # resume a prior run from strix_runs/<name>/run.json
+python main.py -r <run_name>                    # resume a prior run from _artifacts/runs/<name>/run.json
 
 # Recon only — no model, no run record (README §八「只做信息收集」)
 python main.py recon http://target.example:8080/          # → recon/<host>_<stamp>/{recon.json,recon.md,raw/}
@@ -77,7 +77,7 @@ Opt-in RAG: `Ben/rag/` (SQLite vector store, local or OpenAI embeddings) exposes
 5. `Ben/core/execution.py:run_agent_loop()` → `_run_cycle()` — the actual SDK Runner loop, retries, transient-error recovery, budget parking.
 6. Teardown → `AgentRunner._persist()` writes `reports/report_<stamp>.md` + `reports/trace_<stamp>.json`, archiving older ones into `reports/archive/YYYYMM/`.
 
-The run record is also written incrementally: `strix_runs/<run_name>/run.json` (status, usage, targets), `.state/agents.json` + `.state/agents.db` (per-agent session history), plus `vulnerabilities.json`, `vulnerabilities.csv`, `findings.sarif`, `coverage.json`, `vulnerabilities/<id>.md`, and `penetration_test_report.md`. Both `Ben/core/paths.py` and the web viewer read that directory — it is the single source of truth for a run, live or finished. Note the two report surfaces are different files: the executive report inside the run dir (`penetration_test_report.md`) vs. the timestamped copies `_persist()` drops in `reports/` for the CLI (layout documented in README §九).
+The run record is also written incrementally: `_artifacts/runs/<run_name>/run.json` (status, usage, targets), `.state/agents.json` + `.state/agents.db` (per-agent session history), plus `vulnerabilities.json`, `vulnerabilities.csv`, `findings.sarif`, `coverage.json`, `vulnerabilities/<id>.md`, and `penetration_test_report.md`. Both `Ben/core/paths.py` and the web viewer read that directory — it is the single source of truth for a run, live or finished. Note the two report surfaces are different files: the executive report inside the run dir (`penetration_test_report.md`) vs. the timestamped copies `_persist()` drops in `_artifacts/reports/` for the CLI (layout documented in README §九).
 
 ### Multi-agent model and the root-as-orchestrator split
 
@@ -130,6 +130,6 @@ Tool output is bounded and stored (`Ben/tools/output_store.py`); `Ben/tools/null
 - **Dependency manifests must agree**: `requirements.txt`, `pyproject.toml` `[project].dependencies`, and `uv.lock` are kept in lockstep (`tests/config/test_dependency_manifest.py`, plus `uv lock --check` in CI).
 - **Tests assert on prompt/config text**, not just behavior: `tests/agents/test_root_prompt_policy.py`, `tests/agents/test_coverage_reconciliation_prompt.py`, `tests/config/test_dependency_manifest.py`. Editing `system_prompt.jinja` or the skill fragments can fail tests in non-obvious places.
 - **`pytest.ini`** sets `asyncio_mode = auto` — async tests need no decorator; `testpaths = tests`.
-- **`strix_runs/` and `reports/` are runtime output**, gitignored except `.gitkeep`. Don't treat a run directory in the tree as fixture data.
+- **`_artifacts/` is the single runtime-output root** (`runs/`, `reports/`, `cache/`, `tmp/`), fully gitignored. `strix_runs/` and `reports/` are the legacy locations and are still read for backwards compatibility — don't treat a run directory in the tree as fixture data.
 - Code comments and docstrings here are largely Chinese and carry design rationale (the "why", often with the upstream strix equivalent). Match that register when editing rather than converting to terse English.
 - CI (`.github/workflows/ci.yml`) runs four jobs — Python (Ubuntu+Windows), viewer, TUI, wheel packaging. Read the workflow for the exact steps; it is the authority on what a PR must pass.

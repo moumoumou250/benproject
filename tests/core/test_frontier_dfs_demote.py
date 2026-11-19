@@ -1,4 +1,4 @@
-"""frontier：DFS 非空时折叠 Ready。"""
+"""frontier：DFS 与 Ready 并排，不再因 DFS 非空折叠 Ready（P0.5）。"""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ def test_ready_expanded_when_no_dfs(tmp_path: Path) -> None:
     hydrate_task_graph_from_disk(tmp_path)
     entries = [
         {
+            "entry_id": "abc123",
             "surface": "/admin",
             "risk_area": "xss",
             "outcome": "needs_follow_up",
@@ -25,27 +26,28 @@ def test_ready_expanded_when_no_dfs(tmp_path: Path) -> None:
     ]
     block = render_frontier_block(coordinator=None, entries=entries)
     assert "## Next (DFS order)" in block
-    assert "- (none)" in block or "Next (DFS" in block
     assert "/admin" in block
     assert "deferred" not in block
+    assert "coverage_entry_id=" in block
 
 
-def test_ready_collapsed_when_dfs_nonempty(tmp_path: Path) -> None:
+def test_ready_stays_expanded_when_dfs_nonempty(tmp_path: Path) -> None:
     hydrate_task_graph_from_disk(tmp_path)
     add_fact(kind="host", title="t", data={"host": "t"})
     entries = [
         {
+            "entry_id": "abc123",
             "surface": "/admin",
             "risk_area": "xss",
-            "outcome": "needs_follow_up",
-            "evidence": "need check",
+            "outcome": "pending",
+            "evidence": "inventory",
         }
     ]
     block = render_frontier_block(coordinator=None, entries=entries)
     assert "## Next (DFS order)" in block
     assert "profile=recon" in block or "recon" in block
-    assert "deferred" in block
-    # Ready 不应再展开具体 gap + suggest
-    assert "suggest: name=" not in block.split("## Ready")[1].split("##")[0]
-    # DFS 段应在 Ready 之前
+    assert "deferred" not in block
+    ready_section = block.split("## Ready")[1].split("##")[0]
+    assert "/admin" in ready_section
+    assert "coverage_entry_id=" in ready_section
     assert block.index("## Next (DFS order)") < block.index("## Ready")
